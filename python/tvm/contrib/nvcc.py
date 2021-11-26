@@ -28,6 +28,9 @@ from tvm.runtime import ndarray as nd
 from . import utils
 from .._ffi.base import py_str
 
+from pathlib import Path
+import hashlib
+
 
 def compile_cuda(code, target="ptx", arch=None, options=None, path_target=None):
     """Compile cuda code with NVCC from env.
@@ -59,6 +62,13 @@ def compile_cuda(code, target="ptx", arch=None, options=None, path_target=None):
         raise ValueError("target must be in cubin, ptx, fatbin")
     temp_code = temp.relpath("my_kernel.cu")
     temp_target = temp.relpath("my_kernel.%s" % target)
+
+    home = Path.home()
+    kernelCheckFileName = str(Path.joinpath(home, f"temp/{hashlib.sha224(str.encode(code)).hexdigest()}.cu"))
+    
+    #UNCOMMENT below two lines to generate cu file at ~/temp/
+    #with open(kernelCheckFileName, "w") as kernelCheckFile:
+    #    kernelCheckFile.write(code)
 
     with open(temp_code, "w") as out_file:
         out_file.write(code)
