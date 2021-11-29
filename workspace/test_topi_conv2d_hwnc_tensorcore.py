@@ -183,10 +183,12 @@ def verify_conv2d_hwnc(
             % (np.mean(prof_res), np.std(prof_res))
             #% (evaluator(a, w, c).mean, evaluator(a, w, c).std)
         )
+        
         print(
                 "GFLOPS : %.2f"
-                % (2*batch*in_channel*in_size*in_size*num_filter*kernel*kernel/(stride*stride*np.mean(prof_res)*1000000))
+                % (2*batch*in_channel*in_size*in_size*num_filter*kernel*kernel/(stride*stride*np.mean(prof_res)*1e6))
                 )
+        
         '''      
         #############################################################################################
         # For profiling
