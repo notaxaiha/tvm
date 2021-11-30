@@ -33,15 +33,12 @@ from .tensor_intrin import intrin_wmma_gemm
 
 def unpack_HWNCnc_to_hwnc(packed_out, out_dtype):
     """Unpack conv2d_hwnc output from layout hwncnc to hwnc
-
      Parameters
     -----------
     packed_out : tvm.te.Tensor
         The output tensor of conv2d_hwnc.
-
     out_dtype : str
         The output dtype.
-
     Returns
     -------
     unpacked_out : tvm.te.Tensor
@@ -281,16 +278,23 @@ def schedule_hwnc_tensorcore_cuda(cfg, s, Conv):
 
     kernel_scope, hc = s[output].split(hc, nparts=1)
 
-    block_k = s[output].fuse(hc, wc)
-    block_k, split_block_k = s[output].split(block_k, factor=split_block_k_nums)
+    # block_k = s[output].fuse(hc, wc)
+    # block_k, split_block_k = s[output].split(block_k, factor=split_block_k_nums)
+    nc = s[output].fuse(hc, wc, nc)
+
     nc, nci = s[output].split(nc, factor=warp_row_tiles)
     block_i, nc = s[output].split(nc, factor=block_row_warps)
     oc, oci = s[output].split(oc, factor=warp_col_tiles)
     block_j, oc = s[output].split(oc, factor=block_col_warps)
-    s[output].reorder(block_k, split_block_k, block_i, block_j, nc, oc, nci, oci, nnc, ooc)
+
+    # s[output].reorder(block_k, split_block_k, block_i, block_j, nc, oc, nci, oci, nnc, ooc)
+    s[output].reorder(block_i, block_j, nc, oc, nci, oci, nnc, ooc)
+
     t = s[output].fuse(nnc, ooc)
     _, tx = s[output].split(t, factor=warp_size)
-    s[output].bind(block_k, block_z)
+
+    #s[output].bind(block_k, block_z)
+    
     s[output].bind(block_i, block_x)
     s[output].bind(block_j, block_y)
     s[output].bind(tx, thread_x)
@@ -300,6 +304,7 @@ def schedule_hwnc_tensorcore_cuda(cfg, s, Conv):
     # Schedule wmma store
     s[OL].compute_at(s[output], block_j)
     hc, wc, nc, oc, nnc, ooc = OL.op.axis
+    nc = s[OL].fuse(hc, wc, nc)
     oc, oci = s[OL].split(oc, factor=warp_col_tiles)
     _, oc = s[OL].split(oc, factor=block_col_warps)
     nc, nci = s[OL].split(nc, factor=warp_row_tiles)
