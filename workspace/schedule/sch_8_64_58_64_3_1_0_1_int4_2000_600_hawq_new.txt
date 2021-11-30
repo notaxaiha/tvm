@@ -1,0 +1,69 @@
+@relu_8_64_58_64_3_1_0_1 = primfn(A_1: handle, W_1: handle, output_unpack_1: handle) -> ()
+  attr = {"from_legacy_te_schedule": True, "global_symbol": "relu_8_64_58_64_3_1_0_1", "tir.noalias": True}
+  buffers = {A: Buffer(A_2: Pointer(int4), int4, [58, 58, 8, 64], []),
+             output_unpack: Buffer(output_unpack_2: Pointer(int32), int32, [56, 56, 8, 64], []),
+             W: Buffer(W_2: Pointer(int4), int4, [3, 3, 64, 64], [])}
+  buffer_map = {A_1: A, W_1: W, output_unpack_1: output_unpack} {
+  allocate(packed_kernel: Pointer(global int4), int4, [36864]), storage_scope = global {
+    attr [IterVar(blockIdx.x: int32, (nullptr), "ThreadIndex", "blockIdx.x")] "thread_extent" = 36;
+    attr [IterVar(threadIdx.x: int32, (nullptr), "ThreadIndex", "threadIdx.x")] "thread_extent" = 1024;
+    packed_kernel[((blockIdx.x*1024) + threadIdx.x)] = (int4*)W_2[(((((blockIdx.x*1024) + (floordiv(threadIdx.x, 512)*512)) + (floordiv(floormod(threadIdx.x, 256), 32)*64)) + (floordiv(floormod(threadIdx.x, 512), 256)*32)) + floormod(threadIdx.x, 32))]
+    attr [IterVar(blockIdx.x_1: int32, (nullptr), "ThreadIndex", "blockIdx.x")] "thread_extent" = 3136;
+    allocate(Conv.wmma.accumulator: Pointer(wmma.accumulator int32), int32, [512]), storage_scope = wmma.accumulator;
+    allocate(pad_data.shared: Pointer(shared int4), int4, [1536]), storage_scope = shared;
+    allocate(pad_data.shared.wmma.matrix_a: Pointer(wmma.matrix_a int4), int4, [512]), storage_scope = wmma.matrix_a;
+    allocate(packed_kernel.shared: Pointer(shared int4), int4, [4096]), storage_scope = shared;
+    allocate(packed_kernel.shared.wmma.matrix_b: Pointer(wmma.matrix_b int4), int4, [4096]), storage_scope = wmma.matrix_b;
+    attr [IterVar(blockIdx.y: int32, (nullptr), "ThreadIndex", "blockIdx.y")] "thread_extent" = 1 {
+      attr [IterVar(threadIdx.y: int32, (nullptr), "ThreadIndex", "threadIdx.y")] "thread_extent" = 1;
+      attr [IterVar(threadIdx.z: int32, (nullptr), "ThreadIndex", "threadIdx.z")] "thread_extent" = 1 {
+        for (o.c.init: int32, 0, 8) "unroll" {
+          @tir.tvm_fill_fragment(Conv.wmma.accumulator, 8, 8, 32, o.c.init, 0f32, dtype=handle)
+        }
+        for (kh: int32, 0, 3) "unroll" {
+          for (ax1: int32, 0, 3) "unroll" {
+            for (ax3: int32, 0, 2) "unroll" {
+              attr [IterVar(threadIdx.x_1: int32, (nullptr), "ThreadIndex", "threadIdx.x")] "thread_extent" = 32;
+              for (ax4.ax5.fused.inner.outer: int32, 0, 8) "unroll" {
+                pad_data.shared[((((ax1*512) + (ax3*256)) + (threadIdx.x_1*8)) + ax4.ax5.fused.inner.outer)] = (int4*)A_2[(((((((floordiv(blockIdx.x_1, 56)*29696) + (kh*29696)) + (ax1*512)) + (floormod(blockIdx.x_1, 56)*512)) + (floordiv(((threadIdx.x_1*8) + ax4.ax5.fused.inner.outer), 32)*64)) + (ax3*32)) + floormod(((threadIdx.x_1*8) + ax4.ax5.fused.inner.outer), 32))]
+              }
+            }
+          }
+          for (kw: int32, 0, 3) "unroll" {
+            for (ax3_1: int32, 0, 2) "unroll" {
+              @tir.tvm_load_matrix_sync(pad_data.shared.wmma.matrix_a, 8, 8, 32, ax3_1, @tir.tvm_access_ptr(@tir.type_annotation(, dtype=int4), pad_data.shared, ((kw*512) + (ax3_1*256)), 256, 1, dtype=handle), 32, "row_major", dtype=handle)
+            }
+            attr [packed_kernel.shared] "double_buffer_scope" = 1;
+            for (ax2: int32, 0, 8) "unroll" {
+              for (ax3.inner.inner: int32, 0, 2) "unroll" {
+                attr [IterVar(threadIdx.x_1, (nullptr), "ThreadIndex", "threadIdx.x")] "thread_extent" = 32;
+                packed_kernel.shared[ramp((((ax2*512) + (ax3.inner.inner*256)) + (threadIdx.x_1*8)), 1, 8)] = (int4x8*)packed_kernel[ramp((((((kh*12288) + (kw*4096)) + (ax2*512)) + (ax3.inner.inner*256)) + (threadIdx.x_1*8)), 1, 8)]
+              }
+            }
+            for (ax2_1: int32, 0, 8) "unroll" {
+              for (ax3_2: int32, 0, 2) "unroll" {
+                @tir.tvm_load_matrix_sync(packed_kernel.shared.wmma.matrix_b, 8, 8, 32, ((ax2_1*2) + ax3_2), @tir.tvm_access_ptr(@tir.type_annotation(, dtype=int4), packed_kernel.shared, ((ax2_1*512) + (ax3_2*256)), 256, 1, dtype=handle), 32, "col_major", dtype=handle)
+              }
+            }
+            for (ic.inner: int32, 0, 2) "unroll" {
+              for (o.c: int32, 0, 8) "unroll" {
+                @tir.tvm_mma_sync(Conv.wmma.accumulator, o.c, pad_data.shared.wmma.matrix_a, ic.inner, packed_kernel.shared.wmma.matrix_b, ((o.c*2) + ic.inner), Conv.wmma.accumulator, o.c, dtype=handle)
+              }
+            }
+          }
+        }
+        for (o.inner: int32, 0, 8) "unroll" {
+          @tir.tvm_store_matrix_sync(Conv.wmma.accumulator, 8, 8, 32, o.inner, @tir.tvm_access_ptr(@tir.type_annotation(, dtype=int32), packed_kernel.shared, (o.inner*64), 64, 2, dtype=handle), 8, "row_major", dtype=handle)
+        }
+      }
+      attr [IterVar(threadIdx.y, (nullptr), "ThreadIndex", "threadIdx.y")] "thread_extent" = 1;
+      attr [IterVar(threadIdx.z, (nullptr), "ThreadIndex", "threadIdx.z")] "thread_extent" = 1;
+      for (o.outer.inner: int32, 0, 8) "unroll" {
+        for (n.inner.o.inner.fused.outer: int32, 0, 2) "unroll" {
+          attr [IterVar(threadIdx.x_1, (nullptr), "ThreadIndex", "threadIdx.x")] "thread_extent" = 32;
+          output_unpack_2[(((((blockIdx.x_1*512) + (n.inner.o.inner.fused.outer*256)) + (floordiv(threadIdx.x_1, 8)*64)) + (o.outer.inner*8)) + floormod(threadIdx.x_1, 8))] = (int32*)packed_kernel.shared[(((o.outer.inner*64) + (n.inner.o.inner.fused.outer*32)) + threadIdx.x_1)]
+        }
+      }
+    }
+  }
+}
