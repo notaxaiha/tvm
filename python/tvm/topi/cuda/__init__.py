@@ -51,8 +51,8 @@ from .conv2d_nhwc_tensorcore import *
 from .conv3d_ndhwc_tensorcore import *
 from .dense_tensorcore import *
 from .conv2d_hwnc_tensorcore import *
-from .wklee_conv2d_tensorcore_hwnc import *
-from .jelim_conv2d_hwnc_tensorcore import *
+#from .wklee_conv2d_tensorcore_hwnc import *
+#from .jelim_conv2d_hwnc_tensorcore import *
 from .correlation import *
 from .sparse import *
 from . import tensorcore_alter_op
