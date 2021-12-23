@@ -792,6 +792,7 @@ def check_remote(target, device_key, host=None, port=None, priority=100, timeout
 @tvm._ffi.register_func
 def tvm_callback_cuda_compile(code):
     """use nvcc to generate ptx code for better optimization"""
+    #import pdb; pdb.set_trace()
     curr_cuda_target_arch = AutotvmGlobalScope.current.cuda_target_arch
     # e.g., target arch could be [
     #   "-gencode", "arch=compute_52,code=sm_52",
