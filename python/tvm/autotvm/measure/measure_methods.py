@@ -36,7 +36,7 @@ import warnings
 
 import tvm._ffi
 import tvm.ir.transform
-from tvm import nd
+from tvm import nd, code_replacer
 from tvm import rpc as _rpc
 from tvm.autotvm.env import AutotvmGlobalScope, reset_global_scope
 from tvm.contrib import ndk, nvcc, stackvm, tar
@@ -788,6 +788,18 @@ def check_remote(target, device_key, host=None, port=None, priority=100, timeout
     t.join(timeout)
     return not t.is_alive()
 
+'''
+replacer = code_replacer.Code_replacer()
+code_replacer.Code_replacer.enabled = True
+code_replacer.Code_replacer.dump_path = "/home/junkyeong_choi/TVM_test/debug_output/"
+@tvm.register_func
+def tvm_callback_cuda_postproc(code):
+    #import pdb; pdb.set_trace()
+    if code_replacer.Code_replacer.enabled:
+        code = replacer.code_replace_with_TVM_config(code)
+        replacer.dump()
+    return code
+'''
 
 @tvm._ffi.register_func
 def tvm_callback_cuda_compile(code):

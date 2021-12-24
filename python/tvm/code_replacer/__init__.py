@@ -18,6 +18,6 @@
 """ Namespace for manual code replacement. """
 
 
-from . import code_replace
+from . import code_replacer
 
-from .code_replace import *
+from .code_replacer import Code_replacer
