@@ -40,8 +40,8 @@ class Code_replacer:
             self.compute_dict["in_channel"] = featuremap_shape[3]
 
             conv_kernel_shape = tensor_shapes[1][1]
-            self.compute_dict["kernel"] = featuremap_shape[0]
-            self.compute_dict["num_filter"] = featuremap_shape[2]
+            self.compute_dict["kernel"] = conv_kernel_shape[0]
+            self.compute_dict["num_filter"] = conv_kernel_shape[2]
 
             self.compute_dict["stride"] = tensor_shapes[2]
             self.compute_dict["padding"] = tensor_shapes[3]
