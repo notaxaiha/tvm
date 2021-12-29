@@ -52,7 +52,7 @@ class Code_replacer:
         block_col_warps_stable = min(block_col_warps, col_warps)
         col_blocks = col_warps // block_col_warps_stable
 
-        chunk_stable = min(chunk, in_channel)
+        chunk_stable = min(chunk, in_channel//self.wmma_k)
 
         warp_row_tiles = warp_row_tiles_stable
         block_row_warps = block_row_warps_stable
@@ -76,11 +76,13 @@ class Code_replacer:
         codegen_dict["M_WARP"] = warp_row_tiles * self.wmma_m
         codegen_dict["N_WARP"] = warp_col_tiles * self.wmma_n
         codegen_dict["K_WARP"] = in_channel
-        codegen_dict["IC_OUTER"] = chunk 
+        codegen_dict["IC_OUTER"] = (in_channel // self.wmma_k) // chunk
+        codegen_dict["IC_INNER"] = chunk
         codegen_dict["FEATUREMAP_SIZE"] = in_size
         codegen_dict["KERNEL_SIZE"] = kernel
         codegen_dict["PADDED_SIZE"] = in_size + 2 * padding
         codegen_dict["NUM_IC"] = in_channel
+        codegen_dict["NUM_OC"] = num_filter
 
         return codegen_dict
 
@@ -101,10 +103,12 @@ class Code_replacer:
         N_WARP = self.codegen_dict["N_WARP"] 
         K_WARP = self.codegen_dict["K_WARP"] 
         IC_OUTER = self.codegen_dict["IC_OUTER"] 
+        IC_INNER = self.codegen_dict["IC_INNER"] 
         FEATUREMAP_SIZE = self.codegen_dict["FEATUREMAP_SIZE"] 
         KERNEL_SIZE = self.codegen_dict["KERNEL_SIZE"] 
         PADDED_SIZE = self.codegen_dict["PADDED_SIZE"] 
         NUM_IC = self.codegen_dict["NUM_IC"] 
+        NUM_OC = self.codegen_dict["NUM_OC"] 
         PACK_RATE = 8
 
 
@@ -119,7 +123,7 @@ class Code_replacer:
         accum_fragments = (M_WARP * N_WARP) // (self.wmma_m * self.wmma_n)
         featuremap_shared_size = (TB_ROW_COVER + 2) * K_TB
         featuremap_fragments = (M_WARP * K_WARP) // (self.wmma_m * self.wmma_k * IC_OUTER)
-        kernel_shared_size = max((K_TB * N_TB) // (PACK_RATE * IC_OUTER), (M_TB * N_TB) / PACK_RATE)
+        kernel_shared_size = max((K_TB * N_TB) // (PACK_RATE * IC_OUTER), (M_TB * N_TB) // PACK_RATE)
         kernel_fragments = (K_WARP * N_WARP) // (self.wmma_k * self.wmma_n * IC_OUTER)
 
         add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::accumulator, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, int> Conv_wmma_accumulator[{accum_fragments}];")
@@ -131,20 +135,100 @@ class Code_replacer:
         add_codeline(result_codelist, f"for (int o_c_init = 0; o_c_init < accum_fragments; ++o_c_init) {{")
         add_codeline(result_codelist, f"(void)nvcuda::wmma::fill_fragment(Conv_wmma_accumulator[o_c_init], 0.000000e+00f);", 2)
         add_codeline(result_codelist, f"}}")
-        add_codeline(result_codelist, f"int outfeature_row = (blockIdx.z * {TB_ROW_COVER}) / {FEATUREMAP_SIZE};")
-        add_codeline(result_codelist, f"int outfeature_col = (blockIdx.z * {TB_ROW_COVER}) % {FEATUREMAP_SIZE};")
+        add_codeline(result_codelist, f"int outfeature_row = (blockIdx.x * {TB_ROW_COVER}) / {FEATUREMAP_SIZE};")
+        add_codeline(result_codelist, f"int outfeature_col = (blockIdx.x * {TB_ROW_COVER}) % {FEATUREMAP_SIZE};")
+
+
+        #main loop
+        add_codeline(result_codelist, f"#pragma unroll")
+        add_codeline(result_codelist, f"for (int kh = 0; kh < KERNEL_SIZE; kh++) {{")
 
         #featuremap load to shared memory
-        featuremap_shared_size_vectorized = featuremap_shared_size // 4
-        load_iteration = featuremap_shared_size_vectorized // (block_row_warps * block_col_warps * 32)
-
-
-
-        add_codeline(result_codelist, f"for (int kh = 0; kh < 3; kh++) {{")
         add_codeline(result_codelist, f"int cur_row = outfeature_row + kh;", 2)
         add_codeline(result_codelist, f"int base_addr = cur_row * PADDED_SIZE * NUM_IC + outfeature_col * NUM_IC;", 2)
-        add_codeline(result_codelist, f"#pragma unroll", 2)
-        add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iteration}; load_iter++) {{", 2)
+
+
+        featuremap_shared_size_vectorized = featuremap_shared_size // 4
+        whole_block_load_size = (block_row_warps * block_col_warps * 32)
+        load_iteration = featuremap_shared_size_vectorized // whole_block_load_size
+        if load_iteration != 0:
+            add_codeline(result_codelist, f"#pragma unroll", 2)
+            add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iteration}; load_iter++) {{", 2)
+            add_codeline(result_codelist, f"int featuremap_addr = (base_addr/4) + (load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",3)
+            add_codeline(result_codelist, f"((int4*)featuremap_shared)[(load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*)featuremap)[featuremap_addr];",3)
+            add_codeline(result_codelist, f"}}",2)
+
+
+        featuremap_rest = featuremap_shared_size_vectorized % whole_block_load_size
+        inner_block_load_size = (block_row_warps * 32)
+        load_parallel_1 = featuremap_rest // inner_block_load_size
+        if load_parallel_1 != 0:
+            add_codeline(result_codelist, f"if(threadIdx.z < {load_parallel_1}) {{",2)
+            add_codeline(result_codelist, f"int featuremap_addr = (base_addr/4) + ({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",3)
+            add_codeline(result_codelist, f"((int4*)featuremap_shared)[({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*)featuremap)[featuremap_addr];",3)
+            add_codeline(result_codelist, f"}}",2)
+
+
+        featuremap_rest = featuremap_rest % inner_block_load_size
+        whole_warp_load_size = 32
+        load_parallel_2 = featuremap_rest // whole_warp_load_size
+        if load_parallel_2 != 0:
+            add_codeline(result_codelist, f"if(threadIdx.y < {load_parallel_2}) {{",2)
+            add_codeline(result_codelist, f"int featuremap_addr = (base_addr/4) + ({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + ({load_parallel_1} * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",3)
+            add_codeline(result_codelist, f"((int4*)featuremap_shared)[({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + ({load_paralel_1} * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*)featuremap)[featuremap_addr];",3)
+            add_codeline(result_codelist, f"}}",2)
+
+        add_codeline(result_codelist, f"__syncthreads();",2)
+
+        #second loop
+        add_codeline(result_codelist, f"#pragma unroll",2)
+        add_codeline(result_codelist, f"for (int ic_outer = 0; ic_outer < {IC_OUTER}; ic_outer++) {{",2)
+        add_codeline(result_codelist, f"#pragma unroll",3)
+        add_codeline(result_codelist, f"for (int kw = 0; kw < KERNEL_SIZE; kw++) {{",3)
+        add_codeline(result_codelist, f"__syncthreads();",3)
+
+        #load featuremap to fragments
+        add_codeline(result_codelist, f"if (kw==0) {{",3)
+        add_codeline(result_codelist, f"#pragma unroll",4)
+        add_codeline(result_codelist, f"for(int row_iter = 0; row_iter < {WARP_ROW_COVER}; row_iter++) {{",4)
+        add_codeline(result_codelist, f"int shared_mem_idx = (threadIdx.y * {WARP_ROW_COVER} + row_iter);",5)
+        add_codeline(result_codelist, f"#pragma unroll",5)
+        add_codeline(result_codelist, f"for(int ic_inner = 0; ic_inner < {IC_INNER}; ic_inner++)",5)
+        add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[row_iter * {IC_INNER} + ic_inner], ((int *)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {self.wmma_k}) + (ic_outer * {IC_INNER} * {self.wmma_k}) + (ic_inner * {self.wmma_k})), 32);", 6)
+        add_codeline(result_codelist, f"}}",4)
+        add_codeline(result_codelist, f"}}",3)
+
+        add_codeline(result_codelist, f"else {{",3)
+        add_codeline(result_codelist, f"int shared_mem_idx = ((threadIdx.y + 1) * WARP_ROW_COVER + kw - 1);",4)
+        add_codeline(result_codelist, f"#pragma unroll",4)
+        add_codeline(result_codelist, f"for(int ic_inner = 0; ic_inner < {IC_INNER}; ic_inner++)",4)
+        add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[(kw - 1) * {IC_INNER} + ic_inner], ((int*)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {self.wmma_k}) + (ic_outer * {IC_INNER} * {self.wmma_k}) + (ic_inner * {self.wmma_k})), 32);",5)
+        add_codeline(result_codelist, f"}}",3)
+        add_codeline(result_codelist, f"__syncthreads();",3)
+
+        #load weight to shared memory
+        #should find where ic_outer is on memory space
+        #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
+        ic_outer_multiplier = IC_INNER * self.wmma_n * self.wmma_k // PACK_RATE
+        location = 0 if ic_outer_multiplier < whole_warp_load_size else (1 if ic_outer_multiplier < inner_block_load_size else 2)
+        print(f"location:{location}")
+        print(f"ic_outer_multiplier:{ic_outer_multiplier}")
+
+
+
+
+
+
+
+        add_codeline(result_codelist, f"base_addr = (kh * {KERNEL_SIZE} * {NUM_OC} * {NUM_IC} / {PACK_RATE}) + (kw * NUM_OC * NUM_IC / PACK_RATE) + (blockIdx.y * {N_TB} * {NUM_IC} / {PACK_RATE});", 3)
+
+
+
+
+
+
+
+        #load to fragment
         
         add_codeline(result_codelist, f"}}", 0)
 
