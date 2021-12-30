@@ -209,24 +209,70 @@ class Code_replacer:
         #load weight to shared memory
         #should find where ic_outer is on memory space
         #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
+        assert(kernel_shared_size > whole_block_load_size)
+
+
         ic_outer_multiplier = IC_INNER * self.wmma_n * self.wmma_k // PACK_RATE
-        location = 0 if ic_outer_multiplier < whole_warp_load_size else (1 if ic_outer_multiplier < inner_block_load_size else 2)
+        location = 0 if ic_outer_multiplier >= whole_block_load_size else (1 if ic_outer_multiplier >= inner_block_load_size else 2)
         print(f"location:{location}")
         print(f"ic_outer_multiplier:{ic_outer_multiplier}")
 
 
+        add_codeline(result_codelist, f"int base_addr = (kh * {KERNEL_SIZE} * {NUM_OC} * {NUM_IC} / {PACK_RATE}) + (kw * {NUM_OC} * {NUM_IC} / {PACK_RATE}) + (blockIdx.y * {N_TB} * {NUM_IC} / {PACK_RATE});", 3)
+        #ic_outer cover is bigger than the whole block load
+        if location == 0:
+            load_iter = kernel_shared_size // whole_block_load_size
+            load_iter_inner = ic_outer_multiplier // whole_block_load_size
+            load_iter_outer = load_iter // load_iter_inner
+            add_codeline(result_codelist, f"#pragma unroll",3)
+            add_codeline(result_codelist, f"for (int load_iter_outer = 0; load_iter_outer < {load_iter_outer}; load_iter_outer++) {{",3)
+            add_codeline(result_codelist, f"#pragma unroll",4)
+            add_codeline(result_codelist, f"for (int load_iter_inner = 0; load_iter_inner < {load_iter_inner}; load_iter_inner++) {{",4)
+            add_codeline(result_codelist, f"int kernel_global_src = (load_iter_outer * {IC_OUTER} * {load_iter_inner} * {block_col_warps} * {block_row_warps} * 32) + (ic_outer * {load_iter_inner} * {block_col_warps} * {block_row_warps} * 32) + (load_iter_inner * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",5)
+            add_codeline(result_codelist, f"int kernel_shared_dst = (load_iter_outer * {load_iter_inner} * {block_col_warps} * {block_row_warps} * 32) + (load_iter_inner * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",5)
+            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*)kernel)[kernel_global_src];",5)
+            add_codeline(result_codelist, f"}}",4)
+            add_codeline(result_codelist, f"}}",3)
 
+        #ic_outer cover is bigger than the inner block load
+        if location == 1:
+            load_iter = kernel_shared_size // whole_block_load_size
+            #bits = block_col_warps.bit_length() - 1
 
+            load_parallel_inner = ic_outer_multiplier // inner_block_load_size
+            assert(load_parallel_inner & (load_parallel_inner-1) == 0)
+            load_parallel_inner_bitmask = load_parallel_inner - 1
 
+            load_parallel_outer = block_col_warps // load_parallel_inner
+            assert(load_parallel_outer & (load_parallel_outer-1) == 0)
+            load_parallel_outer_bitmask = block_col_warps - load_parallel_outer
 
+            add_codeline(result_codelist, f"#pragma unroll",3)
+            add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{",3)
+            add_codeline(result_codelist, f"int kernel_global_src = (load_iter * {IC_OUTER} * {block_col_warps} * {block_row_warps} * 32) + ((threadIdx.z & {load_parallel_outer_bitmask}) * {IC_OUTER} * {load_parallel_inner} * {block_row_warps} * 32) + (ic_outer * {load_parallel_inner} * {block_row_warps} * 32) + ((threadIdx.z & {load_parallel_inner_bitmask}) * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",4)
+            add_codeline(result_codelist, f"int kernel_shared_dst = (load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",4)
+            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*)kernel)[kernel_global_src];",4)
+            add_codeline(result_codelist, f"}}",3)
 
-        add_codeline(result_codelist, f"base_addr = (kh * {KERNEL_SIZE} * {NUM_OC} * {NUM_IC} / {PACK_RATE}) + (kw * NUM_OC * NUM_IC / PACK_RATE) + (blockIdx.y * {N_TB} * {NUM_IC} / {PACK_RATE});", 3)
+        #ic_outer cover is smaller than the inner block load
+        if location == 2:
+            load_iter = kernel_shared_size // whole_block_load_size
+            #bits = block_col_warps.bit_length() - 1
 
+            load_parallel_inner = ic_outer_multiplier // whole_warp_load_size
+            assert(load_parallel_inner & (load_parallel_inner-1) == 0)
+            load_parallel_inner_bitmask = load_parallel_inner - 1
 
+            load_parallel_outer = block_col_warps // load_parallel_inner
+            assert(load_parallel_outer & (load_parallel_outer-1) == 0)
+            load_parallel_outer_bitmask = block_col_warps - load_parallel_outer
 
-
-
-
+            add_codeline(result_codelist, f"#pragma unroll",3)
+            add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{",3)
+            add_codeline(result_codelist, f"int kernel_global_src = (load_iter * {block_col_warps} * {IC_OUTER} * {block_row_warps} * 32) + (threadIdx.z * {IC_OUTER} * {block_row_warps} * 32) + ((threadIdx.y & {load_parallel_outer_bitmask}) * {IC_OUTER} * {load_parallel_inner} * 32) + (ic_outer * {load_parallel_inner} * 32) + ((threadIdx.y & {load_parallel_inner_bitmask}) * 32) + (threadIdx.x);",4)
+            add_codeline(result_codelist, f"int kernel_shared_dst = (load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",4)
+            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*)kernel)[kernel_global_src];",4)
+            add_codeline(result_codelist, f"}}",3)
 
         #load to fragment
         
