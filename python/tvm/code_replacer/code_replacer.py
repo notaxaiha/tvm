@@ -144,9 +144,6 @@ class Code_replacer:
         add_codeline(result_codelist, f"int outfeature_row = (blockIdx.x * {TB_ROW_COVER}) / {FEATUREMAP_SIZE};")
         add_codeline(result_codelist, f"int outfeature_col = (blockIdx.x * {TB_ROW_COVER}) % {FEATUREMAP_SIZE};")
 
-
-
-
         ################################################
         ################################################
         ################## Main loop ###################
@@ -155,9 +152,6 @@ class Code_replacer:
 
         add_codeline(result_codelist, f"#pragma unroll")
         add_codeline(result_codelist, f"for (int kh = 0; kh < {KERNEL_SIZE}; kh++) {{")
-
-
-
 
         ################################################
         ################################################
@@ -388,7 +382,7 @@ class Code_replacer:
         add_codeline(result_codelist, f"int outval = Conv_wmma_accumulator[row_iter * {warp_col_tiles} + packing_iter * {tiles_for_packing} + output_tile_iter].x[elem_iter];", 5)
         #add_codeline(result_codelist, f"outval += ((int*)bias)[2*threadIdx.x + elem_iter];", 5)
         #add_codeline(result_codelist, f"outval = min(((max(outval, 0) << (long)4) * (long)1241513984 + (long)1073741824 >> (long)31, 15);", 5)
-        #add_codeline(result_codelist, f"outval &= 0xf;", 5)
+        add_codeline(result_codelist, f"outval &= 0xf;", 5)
         add_codeline(result_codelist, f"partial_packed |= outval;", 5)
         add_codeline(result_codelist, f"}}",4)
         add_codeline(result_codelist, f"partial_packed <<= 24;",4)
