@@ -69,7 +69,6 @@ class Code_replacer:
         codegen_dict["warp_col_tiles"] = warp_col_tiles
 
         codegen_dict["TB_ROW_COVER"] = block_row_warps * warp_row_tiles
-        codegen_dict["WARP_ROW_COVER"] = warp_row_tiles
         codegen_dict["M_TB"] = block_row_warps * warp_row_tiles * self.wmma_m
         codegen_dict["N_TB"] = block_col_warps * warp_col_tiles * self.wmma_n
         codegen_dict["K_TB"] = in_channel
@@ -95,7 +94,6 @@ class Code_replacer:
         warp_col_tiles = self.codegen_dict["warp_col_tiles"] 
 
         TB_ROW_COVER = self.codegen_dict["TB_ROW_COVER"] 
-        WARP_ROW_COVER = self.codegen_dict["WARP_ROW_COVER"] 
         M_TB = self.codegen_dict["M_TB"] 
         N_TB = self.codegen_dict["N_TB"] 
         K_TB = self.codegen_dict["K_TB"] 
@@ -119,7 +117,15 @@ class Code_replacer:
         result_codelist = []
         add_codeline(result_codelist, kernel_intro[0], 0)
 
+
+
+
+        ################################################
+        ################################################
         #initial declaration & initialization
+        ################################################
+        ################################################
+
         accum_fragments = (M_WARP * N_WARP) // (self.wmma_m * self.wmma_n)
         featuremap_shared_size = (TB_ROW_COVER + 2) * K_TB
         featuremap_fragments = (M_WARP * K_WARP) // (self.wmma_m * self.wmma_k * IC_OUTER)
@@ -139,11 +145,26 @@ class Code_replacer:
         add_codeline(result_codelist, f"int outfeature_col = (blockIdx.x * {TB_ROW_COVER}) % {FEATUREMAP_SIZE};")
 
 
+
+
+        ################################################
+        ################################################
         #main loop
+        ################################################
+        ################################################
+
         add_codeline(result_codelist, f"#pragma unroll")
         add_codeline(result_codelist, f"for (int kh = 0; kh < {KERNEL_SIZE}; kh++) {{")
 
+
+
+
+        ################################################
+        ################################################
         #featuremap load to shared memory
+        ################################################
+        ################################################
+
         add_codeline(result_codelist, f"int cur_row = outfeature_row + kh;", 2)
         add_codeline(result_codelist, f"int featuremap_base_addr = cur_row * {PADDED_SIZE} * {NUM_IC} + outfeature_col * {NUM_IC};", 2)
 
@@ -180,19 +201,30 @@ class Code_replacer:
 
         add_codeline(result_codelist, f"__syncthreads();",2)
 
+        ################################################
+        ################################################
         #second loop
+        ################################################
+        ################################################
+
         add_codeline(result_codelist, f"#pragma unroll",2)
         add_codeline(result_codelist, f"for (int ic_outer = 0; ic_outer < {IC_OUTER}; ic_outer++) {{",2)
         add_codeline(result_codelist, f"#pragma unroll",3)
         add_codeline(result_codelist, f"for (int kw = 0; kw < {KERNEL_SIZE}; kw++) {{",3)
         add_codeline(result_codelist, f"__syncthreads();",4)
 
+
+        ################################################
+        ################################################
         #load featuremap to fragments
+        ################################################
+        ################################################
+
         fragment_size = self.wmma_m * self.wmma_k // PACK_RATE
         add_codeline(result_codelist, f"if (kw==0) {{",4)
         add_codeline(result_codelist, f"#pragma unroll",5)
-        add_codeline(result_codelist, f"for(int row_iter = 0; row_iter < {WARP_ROW_COVER}; row_iter++) {{",5)
-        add_codeline(result_codelist, f"int shared_mem_idx = (threadIdx.y * {WARP_ROW_COVER} + row_iter);",6)
+        add_codeline(result_codelist, f"for(int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",5)
+        add_codeline(result_codelist, f"int shared_mem_idx = (threadIdx.y * {warp_row_tiles} + row_iter);",6)
         add_codeline(result_codelist, f"#pragma unroll",6)
         add_codeline(result_codelist, f"for(int ic_inner = 0; ic_inner < {IC_INNER}; ic_inner++)",6)
         add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[row_iter * {IC_INNER} + ic_inner], ((int *)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {fragment_size}) + (ic_outer * {IC_INNER} * {fragment_size}) + (ic_inner * {fragment_size})), 32);", 7)
@@ -200,16 +232,25 @@ class Code_replacer:
         add_codeline(result_codelist, f"}}",4)
 
         add_codeline(result_codelist, f"else {{",4)
-        add_codeline(result_codelist, f"int shared_mem_idx = ((threadIdx.y + 1) * {WARP_ROW_COVER} + kw - 1);",5)
+        add_codeline(result_codelist, f"int shared_mem_idx = ((threadIdx.y + 1) * {warp_row_tiles} + kw - 1);",5)
         add_codeline(result_codelist, f"#pragma unroll",5)
         add_codeline(result_codelist, f"for(int ic_inner = 0; ic_inner < {IC_INNER}; ic_inner++)",5)
         add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[(kw - 1) * {IC_INNER} + ic_inner], ((int*)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {fragment_size}) + (ic_outer * {IC_INNER} * {fragment_size}) + (ic_inner * {fragment_size})), 32);",6)
         add_codeline(result_codelist, f"}}",4)
         add_codeline(result_codelist, f"__syncthreads();",4)
 
+
+
+
+        ################################################
+        ################################################
         #load weight to shared memory
+        ################################################
+        ################################################
+
         #should find where ic_outer is on memory space
         #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
+
         assert(kernel_shared_size > whole_block_load_size)
 
 
@@ -277,7 +318,14 @@ class Code_replacer:
 
         add_codeline(result_codelist, f"__syncthreads();",4)
 
+
+
+        ################################################
+        ################################################
         #load kernel weight to fragments
+        ################################################
+        ################################################
+
         fragment_size = self.wmma_k * self.wmma_n // PACK_RATE
         add_codeline(result_codelist, f"#pragma unroll",4)
         add_codeline(result_codelist, f"for (int oc_tile = 0; oc_tile < {warp_col_tiles}; oc_tile++) {{",4)
@@ -288,15 +336,20 @@ class Code_replacer:
         add_codeline(result_codelist, f"}}",4)
 
 
+        ################################################
+        ################################################
         #conduct wmma
+        ################################################
+        ################################################
+
         add_codeline(result_codelist, f"#pragma unroll",4)
         add_codeline(result_codelist, f"for (int ic_inner = 0; ic_inner < {IC_INNER}; ic_inner++) {{",4)
         add_codeline(result_codelist, f"#pragma unroll",5)
-        add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {WARP_ROW_COVER}; row_iter++) {{",5)
-        add_codeline(result_codelist, f"int featuremap_fragment_idx = ((row_iter + kw) % {WARP_ROW_COVER}) * {IC_INNER} + ic_inner;",6)
+        add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",5)
+        add_codeline(result_codelist, f"int featuremap_fragment_idx = ((row_iter + kw) % {warp_row_tiles}) * {IC_INNER} + ic_inner;",6)
         add_codeline(result_codelist, f"#pragma unroll",6)
         add_codeline(result_codelist, f"for (int oc_tile = 0; oc_tile < {warp_col_tiles}; oc_tile++) {{",6)
-        add_codeline(result_codelist, f"(void)nvcuda::wmma::mma_sync(Conv_wmma_accumulator[row_iter * {warp_row_tiles} + oc_tile], featuremap_frag[featuremap_fragment_idx], kernel_frag[oc_tile * {IC_INNER} + ic_inner], Conv_wmma_accumulator[row_iter * {warp_row_tiles} + oc_tile]);",7)
+        add_codeline(result_codelist, f"(void)nvcuda::wmma::mma_sync(Conv_wmma_accumulator[row_iter * {warp_col_tiles} + oc_tile], featuremap_frag[featuremap_fragment_idx], kernel_frag[oc_tile * {IC_INNER} + ic_inner], Conv_wmma_accumulator[row_iter * {warp_col_tiles} + oc_tile]);",7)
         add_codeline(result_codelist, f"}}",6)
         add_codeline(result_codelist, f"}}",5)
         add_codeline(result_codelist, f"}}",4)
@@ -305,8 +358,52 @@ class Code_replacer:
         add_codeline(result_codelist, f"}}",1)
 
 
+        ################################################
+        ################################################
+        #conduct fragment level data packing
+        ################################################
+        ################################################
+        #each warp should cover at least four fragment tiles on output channel level for warp-level register packing
+        warp_register_count = 32
+        packed_tile_register_count = self.wmma_m * self.wmma_n // PACK_RATE
 
+        tiles_for_packing = warp_register_count // packed_tile_register_count
 
+        assert(warp_col_tiles >= tiles_for_packing)
+        packing_iter = warp_col_tiles // tiles_for_packing
+
+        add_codeline(result_codelist, f"__syncthreads()",1)
+        add_codeline(result_codelist, f"#pragma unroll",1)
+        add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",1)
+        add_codeline(result_codelist, f"#pragma unroll",2)
+        add_codeline(result_codelist, f"for (int packing_iter = 0; packing_iter < {packing_iter}; packing_iter++) {{",2)
+        add_codeline(result_codelist, f"int fully_packed = 0;",3)
+        add_codeline(result_codelist, f"#pragma unroll",3)
+        add_codeline(result_codelist, f"for (int output_tile_iter = 0; output_tile_iter < {tiles_for_packing}; output_tile_iter++) {{",3)
+        add_codeline(result_codelist, f"int partial_packed = 0;",4)
+        add_codeline(result_codelist, f"int temp;",4)
+        add_codeline(result_codelist, f"#pragma unroll",4)
+        add_codeline(result_codelist, f"for (int elem_iter = 0; elem_iter < Conv_wmma_accumulator[0].num_elements; elem_iter++) {{",4)
+        add_codeline(result_codelist, f"partial_packed <<= 4;", 5)
+        add_codeline(result_codelist, f"int outval = Conv_wmma_accumulator[row_iter * {warp_col_tiles} + packing_iter * {tiles_for_packing} + output_tile_iter].x[elem_iter];", 5)
+        #add_codeline(result_codelist, f"outval += ((int*)bias)[2*threadIdx.x + elem_iter];", 5)
+        #add_codeline(result_codelist, f"outval = min(((max(outval, 0) << (long)4) * (long)1241513984 + (long)1073741824 >> (long)31, 15);", 5)
+        #add_codeline(result_codelist, f"outval &= 0xf;", 5)
+        add_codeline(result_codelist, f"partial_packed |= outval;", 5)
+        add_codeline(result_codelist, f"}}",4)
+        add_codeline(result_codelist, f"partial_packed <<= 24;",4)
+        add_codeline(result_codelist, f"temp = warpReducePack(partial_packed);",4)
+        add_codeline(result_codelist, f"temp = __shfl_up_sync(0xffffffff, temp, output_tile_iter);",4)
+        add_codeline(result_codelist, f"if(threadIdx.x == 0 && output_tile_iter > 0);",4)
+        add_codeline(result_codelist, f"temp = 0;",5)
+        add_codeline(result_codelist, f"fully_packed |= temp;",4)
+        add_codeline(result_codelist, f"}}",3)
+        #this shared memory address tends to shift due to data layout change
+        add_codeline(result_codelist, f"kernel_shared[(threadIdx.y * {warp_row_tiles} * {block_col_warps} * {packing_iter} * 32) + (row_iter * {block_col_warps} * {packing_iter} * 32) + (threadIdx.z * {packing_iter} * 32) + (packing_iter * 32) + threadIdx.x] = fully_packed;",3)
+        add_codeline(result_codelist, f"__syncthreads();",3)
+        add_codeline(result_codelist, f"}}",2)
+        add_codeline(result_codelist, f"__syncthreads();",2)
+        add_codeline(result_codelist, f"}}",1)
 
 
         
