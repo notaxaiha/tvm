@@ -406,7 +406,23 @@ class Code_replacer:
         add_codeline(result_codelist, f"}}",1)
 
 
+
+        add_codeline(result_codelist, f"#pragma unroll",1)
+        add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",1)
+        add_codeline(result_codelist, f"#pragma unroll",2)
+        #packing iter iterates over output channel
+        channel_iter = packing_iter
+        add_codeline(result_codelist, f"for (int channel_iter = 0; channel_iter < {channel_iter}; channel_iter++) {{",2)
+        add_codeline(result_codelist, f"int global_output_dst = (blockIdx.x * {block_row_warps} * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",3)
+        add_codeline(result_codelist, f"+ (threadIdx.y * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
+        add_codeline(result_codelist, f"+ (row_iter * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
+        add_codeline(result_codelist, f"+ (blockIdx.y * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
+        add_codeline(result_codelist, f"int local_output_src = (threadIdx.y * {warp_row_tiles} * {block_col_warps} * {channel_iter}) * 32",3)
+        add_codeline(result_codelist, f"+ (row_iter * {block_col_warps} * {channel_iter} * 32) + (threaIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
+        add_codeline(result_codelist, f"((int*)T_cast)[global_ouptut_dst] = kernel_shared[local_output_src];", 3)
         
+        add_codeline(result_codelist, f"}}", 2)
+        add_codeline(result_codelist, f"}}", 1)
         add_codeline(result_codelist, f"}}", 0)
 
         result_code = "".join(result_codelist)
