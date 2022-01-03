@@ -134,11 +134,13 @@ class Code_replacer:
 
         add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::accumulator, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, int> Conv_wmma_accumulator[{accum_fragments}];")
         add_codeline(result_codelist, f"__shared__ int featuremap_shared[{featuremap_shared_size}];")
-        add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::s4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
+        ########using u4 on featuremap for correctness check
+        add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::u4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
+        ########using u4 on featuremap for correctness check
         add_codeline(result_codelist, f"__shared__ int kernel_shared[{kernel_shared_size}];")
         add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::s4, nvcuda::wmma::col_major> kernel_frag[{kernel_fragments}];")
         add_codeline(result_codelist, f"#pragma unroll")
-        add_codeline(result_codelist, f"for (int o_c_init = 0; o_c_init < accum_fragments; ++o_c_init) {{")
+        add_codeline(result_codelist, f"for (int o_c_init = 0; o_c_init < {accum_fragments}; ++o_c_init) {{")
         add_codeline(result_codelist, f"(void)nvcuda::wmma::fill_fragment(Conv_wmma_accumulator[o_c_init], 0.000000e+00f);", 2)
         add_codeline(result_codelist, f"}}")
         add_codeline(result_codelist, f"int outfeature_row = (blockIdx.x * {TB_ROW_COVER}) / {FEATUREMAP_SIZE};")
@@ -350,6 +352,7 @@ class Code_replacer:
         add_codeline(result_codelist, f"}}",3)
         add_codeline(result_codelist, f"}}",2)
         add_codeline(result_codelist, f"}}",1)
+        add_codeline(result_codelist, f"__syncthreads();",1)
 
 
         ################################################
@@ -366,7 +369,6 @@ class Code_replacer:
         assert(warp_col_tiles >= tiles_for_packing)
         packing_iter = warp_col_tiles // tiles_for_packing
 
-        add_codeline(result_codelist, f"__syncthreads()",1)
         add_codeline(result_codelist, f"#pragma unroll",1)
         add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",1)
         add_codeline(result_codelist, f"#pragma unroll",2)
@@ -381,14 +383,16 @@ class Code_replacer:
         add_codeline(result_codelist, f"partial_packed <<= 4;", 5)
         add_codeline(result_codelist, f"int outval = Conv_wmma_accumulator[row_iter * {warp_col_tiles} + packing_iter * {tiles_for_packing} + output_tile_iter].x[elem_iter];", 5)
         #add_codeline(result_codelist, f"outval += ((int*)bias)[2*threadIdx.x + elem_iter];", 5)
-        #add_codeline(result_codelist, f"outval = min(((max(outval, 0) << (long)4) * (long)1241513984 + (long)1073741824 >> (long)31, 15);", 5)
+        #this line is required for correctness check for now
+        add_codeline(result_codelist, f"outval = min(((max(outval, 0) << (long)4) * (long)1241513984 + (long)1073741824 >> (long)31, 15);", 5)
+        #this line is required for correctness check for now
         add_codeline(result_codelist, f"outval &= 0xf;", 5)
         add_codeline(result_codelist, f"partial_packed |= outval;", 5)
         add_codeline(result_codelist, f"}}",4)
         add_codeline(result_codelist, f"partial_packed <<= 24;",4)
         add_codeline(result_codelist, f"temp = warpReducePack(partial_packed);",4)
         add_codeline(result_codelist, f"temp = __shfl_up_sync(0xffffffff, temp, output_tile_iter);",4)
-        add_codeline(result_codelist, f"if(threadIdx.x == 0 && output_tile_iter > 0);",4)
+        add_codeline(result_codelist, f"if(threadIdx.x == 0 && output_tile_iter > 0)",4)
         add_codeline(result_codelist, f"temp = 0;",5)
         add_codeline(result_codelist, f"fully_packed |= temp;",4)
         add_codeline(result_codelist, f"}}",3)
@@ -411,9 +415,9 @@ class Code_replacer:
         add_codeline(result_codelist, f"+ (threadIdx.y * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
         add_codeline(result_codelist, f"+ (row_iter * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
         add_codeline(result_codelist, f"+ (blockIdx.y * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
-        add_codeline(result_codelist, f"int local_output_src = (threadIdx.y * {warp_row_tiles} * {block_col_warps} * {channel_iter}) * 32",3)
-        add_codeline(result_codelist, f"+ (row_iter * {block_col_warps} * {channel_iter} * 32) + (threaIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
-        add_codeline(result_codelist, f"((int*)T_cast)[global_ouptut_dst] = kernel_shared[local_output_src];", 3)
+        add_codeline(result_codelist, f"int local_output_src = (threadIdx.y * {warp_row_tiles} * {block_col_warps} * {channel_iter} * 32)",3)
+        add_codeline(result_codelist, f"+ (row_iter * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
+        add_codeline(result_codelist, f"((int*)T_cast)[global_output_dst] = kernel_shared[local_output_src];", 3)
         
         add_codeline(result_codelist, f"}}", 2)
         add_codeline(result_codelist, f"}}", 1)
