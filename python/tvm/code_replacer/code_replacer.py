@@ -259,7 +259,8 @@ class Code_replacer:
         #should find where ic_outer is on memory space
         #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
 
-        assert(kernel_shared_size > whole_block_load_size)
+        if (kernel_shared_size > whole_block_load_size):
+            return "Fallback"
 
 
         ic_outer_multiplier = IC_INNER * self.wmma_n * self.wmma_k // PACK_RATE
@@ -291,6 +292,7 @@ class Code_replacer:
 
             #1,2,4,8.....
             load_parallel = ic_outer_multiplier // inner_block_load_size
+            #check two's power
             assert(load_parallel & (load_parallel-1) == 0)
             load_parallel_bitmask = load_parallel - 1
 
@@ -313,6 +315,7 @@ class Code_replacer:
             #bits = block_col_warps.bit_length() - 1
 
             load_parallel = ic_outer_multiplier // whole_warp_load_size
+            #check two's power
             assert(load_parallel & (load_parallel-1) == 0)
             load_parallel_bitmask = load_parallel - 1
 
@@ -383,7 +386,8 @@ class Code_replacer:
 
         tiles_for_packing = warp_register_count // packed_tile_register_count
 
-        assert(warp_col_tiles >= tiles_for_packing)
+        if (warp_col_tiles >= tiles_for_packing):
+            return "Fallback"
         packing_iter = warp_col_tiles // tiles_for_packing
 
         add_codeline(result_codelist, f"#pragma unroll",1)
@@ -460,6 +464,10 @@ class Code_replacer:
         #print(kernel_intro)
 
         result_code = self.codegen(kernel_intro)
+        if result_code == "Fallback":
+            #code generation failure. Fallback to default TVM code generation
+            return self.code
+
         self.dumpcode = result_code
 
         return self.code
