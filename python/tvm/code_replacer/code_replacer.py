@@ -115,10 +115,9 @@ class Code_replacer:
             codelist.append(indent + codeline + "\n")
 
         result_codelist = []
+
+        #Support only one kernel for now
         add_codeline(result_codelist, kernel_intro[0], 0)
-
-
-
 
         ################################################
         ################################################
@@ -453,6 +452,10 @@ class Code_replacer:
         kernel_intro = []
 
         self.codegen_dict = self.generate_codegen_dict()
+        if "Fallback" in self.codegen_dict:
+            self.code += "//Code generation failure. Fallback to default TVM code generation\n"
+            return self.code
+
         print("====codegen_dict====")
         print(self.codegen_dict)
         print("")
@@ -465,9 +468,10 @@ class Code_replacer:
 
         result_code = self.codegen(kernel_intro)
         if result_code == "Fallback":
-            #code generation failure. Fallback to default TVM code generation
+            self.code += "//Code generation failure. Fallback to default TVM code generation\n"
             return self.code
 
+        #For now, just dump generated code
         self.dumpcode = result_code
 
         return self.code
