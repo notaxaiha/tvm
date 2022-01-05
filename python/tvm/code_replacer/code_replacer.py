@@ -60,7 +60,13 @@ class Code_replacer:
         block_col_warps = block_col_warps_stable
         chunk = chunk_stable
 
+
         codegen_dict = dict()
+
+        if(in_size * batch % (block_row_warps * warp_row_tiles * self.wmma_m) != 0):
+            codegen_dict["Fallback"] = True
+            return codegen_dict
+
         codegen_dict["grid_row_blocks"] = row_blocks
         codegen_dict["block_row_warps"] = block_row_warps
         codegen_dict["warp_row_tiles"] = warp_row_tiles
