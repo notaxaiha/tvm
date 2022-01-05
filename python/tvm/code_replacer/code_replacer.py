@@ -124,6 +124,11 @@ class Code_replacer:
 
         #Support only one kernel for now
         add_codeline(result_codelist, kernel_intro[0], 0)
+        #Nasty getter of variable name for now
+        #TODO:Make it neat
+        input_featuremap_name = kernel_intro[0].split(" ")[7][:-1]
+        input_kernel_name = kernel_intro[0].split(" ")[10][:-1]
+        output_featuremap_name = kernel_intro[0].split(" ")[13][:-1]
 
         ################################################
         ################################################
@@ -177,7 +182,7 @@ class Code_replacer:
             add_codeline(result_codelist, f"#pragma unroll", 2)
             add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iteration}; load_iter++) {{", 2)
             add_codeline(result_codelist, f"int featuremap_addr = (featuremap_base_addr/4) + (load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",3)
-            add_codeline(result_codelist, f"((int4*)featuremap_shared)[(load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*)featuremap)[featuremap_addr];",3)
+            add_codeline(result_codelist, f"((int4*)featuremap_shared)[(load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*){input_featuremap_name})[featuremap_addr];",3)
             add_codeline(result_codelist, f"}}",2)
 
 
@@ -187,7 +192,7 @@ class Code_replacer:
         if load_parallel_1 != 0:
             add_codeline(result_codelist, f"if(threadIdx.z < {load_parallel_1}) {{",2)
             add_codeline(result_codelist, f"int featuremap_addr = (featuremap_base_addr/4) + ({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",3)
-            add_codeline(result_codelist, f"((int4*)featuremap_shared)[({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*)featuremap)[featuremap_addr];",3)
+            add_codeline(result_codelist, f"((int4*)featuremap_shared)[({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*){input_featuremap_name})[featuremap_addr];",3)
             add_codeline(result_codelist, f"}}",2)
 
 
@@ -197,7 +202,7 @@ class Code_replacer:
         if load_parallel_2 != 0:
             add_codeline(result_codelist, f"if((threadIdx.y < {load_parallel_2}) && (threadIdx.z == {block_col_warps} - 1)) {{",2)
             add_codeline(result_codelist, f"int featuremap_addr = (featuremap_base_addr/4) + ({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + ({load_parallel_1} * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",3)
-            add_codeline(result_codelist, f"((int4*)featuremap_shared)[({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + ({load_parallel_1} * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*)featuremap)[featuremap_addr];",3)
+            add_codeline(result_codelist, f"((int4*)featuremap_shared)[({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + ({load_parallel_1} * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x)] = ((int4*){input_featuremap_name})[featuremap_addr];",3)
             add_codeline(result_codelist, f"}}",2)
 
         featuremap_rest = featuremap_rest % whole_warp_load_size
@@ -205,7 +210,7 @@ class Code_replacer:
         if load_parallel_3 != 0:
             add_codeline(result_codelist, f"if((threadIdx.x < {load_parallel_3}) && (threadIdx.y == {block_row_warps} - 1) && (threadIdx.z == {block_col_warps} - 1)) {{",2)
             add_codeline(result_codelist, f"int featuremap_addr = (featuremap_base_addr/4) + ({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + ({load_parallel_1} * {block_row_warps} * 32) + ({load_parallel_2} * 32) + (threadIdx.x);",3)
-            add_codeline(result_codelist, f"((int4*)featuremap_shared)[({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + ({load_parallel_1} * {block_row_warps} * 32) + ({load_parallel_2} * 32) + (threadIdx.x)] = ((int4*)featuremap)[featuremap_addr];",3)
+            add_codeline(result_codelist, f"((int4*)featuremap_shared)[({load_iteration} * {block_col_warps} * {block_row_warps} * 32) + ({load_parallel_1} * {block_row_warps} * 32) + ({load_parallel_2} * 32) + (threadIdx.x)] = ((int4*){input_featuremap_name})[featuremap_addr];",3)
             add_codeline(result_codelist, f"}}",2)
 
         add_codeline(result_codelist, f"__syncthreads();",2)
@@ -286,7 +291,7 @@ class Code_replacer:
             add_codeline(result_codelist, f"for (int load_iter_inner = 0; load_iter_inner < {load_iter_inner}; load_iter_inner++) {{",5)
             add_codeline(result_codelist, f"int kernel_global_src = kernel_base_addr + (load_iter_outer * {IC_OUTER} * {load_iter_inner} * {block_col_warps} * {block_row_warps} * 32) + (ic_outer * {load_iter_inner} * {block_col_warps} * {block_row_warps} * 32) + (load_iter_inner * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",6)
             add_codeline(result_codelist, f"int kernel_shared_dst = (load_iter_outer * {load_iter_inner} * {block_col_warps} * {block_row_warps} * 32) + (load_iter_inner * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",6)
-            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*)kernel)[kernel_global_src];",6)
+            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*){input_kernel_name})[kernel_global_src];",6)
             add_codeline(result_codelist, f"}}",5)
             add_codeline(result_codelist, f"}}",4)
 
@@ -311,7 +316,7 @@ class Code_replacer:
             add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{",4)
             add_codeline(result_codelist, f"int kernel_global_src = kernel_base_addr + (load_iter * {IC_OUTER} * {block_col_warps} * {block_row_warps} * 32) + ((threadIdx.z >> {load_parallel_power}) * {IC_OUTER} * {load_parallel} * {block_row_warps} * 32) + (ic_outer * {load_parallel} * {block_row_warps} * 32) + ((threadIdx.z & {load_parallel_bitmask}) * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",5)
             add_codeline(result_codelist, f"int kernel_shared_dst = (load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",5)
-            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*)kernel)[kernel_global_src];",5)
+            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*){input_kernel_name})[kernel_global_src];",5)
             add_codeline(result_codelist, f"}}",4)
 
         #ic_outer cover is smaller than the inner block load
@@ -334,7 +339,7 @@ class Code_replacer:
             add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{",4)
             add_codeline(result_codelist, f"int kernel_global_src = kernel_base_addr + (load_iter * {block_col_warps} * {IC_OUTER} * {block_row_warps} * 32) + (threadIdx.z * {IC_OUTER} * {block_row_warps} * 32) + ((threadIdx.y >> {load_parallel_power}) * {IC_OUTER} * {load_parallel} * 32) + (ic_outer * {load_parallel} * 32) + ((threadIdx.y & {load_parallel_bitmask}) * 32) + (threadIdx.x);",5)
             add_codeline(result_codelist, f"int kernel_shared_dst = (load_iter * {block_col_warps} * {block_row_warps} * 32) + (threadIdx.z * {block_row_warps} * 32) + (threadIdx.y * 32) + (threadIdx.x);",5)
-            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*)kernel)[kernel_global_src];",5)
+            add_codeline(result_codelist, f"((int*)kernel_shared)[kernel_shared_dst] = ((int*){input_kernel_name})[kernel_global_src];",5)
             add_codeline(result_codelist, f"}}",4)
 
         add_codeline(result_codelist, f"__syncthreads();",4)
@@ -443,7 +448,7 @@ class Code_replacer:
         add_codeline(result_codelist, f"+ (blockIdx.y * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
         add_codeline(result_codelist, f"int local_output_src = (threadIdx.y * {warp_row_tiles} * {block_col_warps} * {channel_iter} * 32)",3)
         add_codeline(result_codelist, f"+ (row_iter * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
-        add_codeline(result_codelist, f"((int*)T_cast)[global_output_dst] = kernel_shared[local_output_src];", 3)
+        add_codeline(result_codelist, f"((int*){output_featuremap_name})[global_output_dst] = kernel_shared[local_output_src];", 3)
         
         add_codeline(result_codelist, f"}}", 2)
         add_codeline(result_codelist, f"}}", 1)
