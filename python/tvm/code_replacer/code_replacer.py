@@ -269,7 +269,7 @@ class Code_replacer:
         #should find where ic_outer is on memory space
         #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
 
-        if (kernel_shared_size > whole_block_load_size):
+        if not (kernel_shared_size > whole_block_load_size):
             return "Fallback"
 
 
@@ -396,7 +396,7 @@ class Code_replacer:
 
         tiles_for_packing = warp_register_count // packed_tile_register_count
 
-        if (warp_col_tiles >= tiles_for_packing):
+        if not (warp_col_tiles >= tiles_for_packing):
             return "Fallback"
         packing_iter = warp_col_tiles // tiles_for_packing
 
@@ -454,6 +454,9 @@ class Code_replacer:
         add_codeline(result_codelist, f"}}", 1)
         add_codeline(result_codelist, f"}}", 0)
 
+        add_codeline(result_codelist, kernel_intro[1], 0)
+        add_codeline(result_codelist, f"}}", 0)
+
         result_code = "".join(result_codelist)
 
         return result_code
@@ -464,6 +467,7 @@ class Code_replacer:
 
         self.codegen_dict = self.generate_codegen_dict()
         if "Fallback" in self.codegen_dict:
+            self.dumpcode = "Fallback due to invalid tuning log"
             self.code += "//Code generation failure. Fallback to default TVM code generation\n"
             return self.code
 
@@ -479,6 +483,7 @@ class Code_replacer:
 
         result_code = self.codegen(kernel_intro)
         if result_code == "Fallback":
+            self.dumpcode = "Fallback due to invalid codegen parameters"
             self.code += "//Code generation failure. Fallback to default TVM code generation\n"
             return self.code
 
