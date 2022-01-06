@@ -61,7 +61,8 @@ _conv2d_hwnc_tensorcore_implement = {
 def verify_conv2d_hwnc(
     batch, in_channel, in_size, num_filter, kernel, stride, padding, dilation=1, dtype="int4"
 ):
-    logfile = f"./logs/conv2d_{batch}_{in_channel}_{in_size}_{num_filter}_{kernel}_{stride}_{padding}_{dilation}_{dtype}_{args.n_trial}_{args.early_stopping}_test.log"
+    logfile = f"./logs/conv2d_{batch}_{in_channel}_{in_size}_{num_filter}_{kernel}_{stride}_{padding}_{dilation}_{dtype}_{args.n_trial}_{args.early_stopping}.log"
+    # logfile = f"./logs/conv2d_cfg_{batch}_{in_channel}_{in_size}_{num_filter}_{kernel}_{stride}_{padding}_{dilation}_{dtype}_{args.n_trial}_{args.early_stopping}.log"
     # logfile = f"./logs/conv2d_{batch}_{in_channel}_{in_size}_{num_filter}_{kernel}_{stride}_{padding}_{dilation}_{dtype}_hawq.log"
     # logfile = f"./logs/conv2d_{batch}_{in_channel}_{in_size}_{num_filter}_{kernel}_{stride}_{padding}_{dilation}_{dtype}_cutlass.log"
 
@@ -214,7 +215,7 @@ def tune_and_evaluate(
     np.random.seed(123)
     target = "cuda"
     ctx = tvm.device(target)
-    logfile = f"./logs/conv2d_{batch}_{in_channel}_{in_size}_{num_filter}_{kernel}_{stride}_{padding}_{dilation}_{dtype}_{args.n_trial}_{args.early_stopping}.log"
+    logfile = f"./logs/conv2d_cfg_{batch}_{in_channel}_{in_size}_{num_filter}_{kernel}_{stride}_{padding}_{dilation}_{dtype}_{args.n_trial}_{args.early_stopping}.log"
 
     prefix = f"conv2d_N:{batch}, IC:{in_channel}, HW:{in_size}, OC:{num_filter}, RS:{kernel}, str:{stride}, pad:{padding}, dil:{dilation}, {dtype}, n_trial:{args.n_trial}, es:{args.early_stopping}"
 
@@ -232,6 +233,7 @@ def tune_and_evaluate(
     )
 
     print(task.config_space)
+    import pdb; pdb.set_trace()
     
     # Use local gpu, measure 10 times for every config to reduce variance
     # The timeout of compiling a program is 10 seconds, the timeout for running is 4 seconds
