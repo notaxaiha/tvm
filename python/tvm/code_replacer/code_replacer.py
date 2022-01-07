@@ -123,6 +123,36 @@ class Code_replacer:
 
         result_codelist = []
 
+	add_codeline(result_codelist, f"__device__ inline long max(int a, long b)", 0)
+	add_codeline(result_codelist, f"{", 0)
+	add_codeline(result_codelist, f"  return max((long)a, b);", 0)
+	add_codeline(result_codelist, f"}", 0)
+	add_codeline(result_codelist, f"__device__ inline long max(long a, int b)", 0)
+	add_codeline(result_codelist, f"{", 0)
+	add_codeline(result_codelist, f"  return max(b, a);", 0)
+	add_codeline(result_codelist, f"}", 0)
+	add_codeline(result_codelist, f"__device__ inline long min(long a, int b)", 0)
+	add_codeline(result_codelist, f"{", 0)
+	add_codeline(result_codelist, f"  return min(a, (long)b);", 0)
+	add_codeline(result_codelist, f"}", 0)
+	add_codeline(result_codelist, f"__device__ __inline__ int warpReducePack(unsigned int val) {", 0)
+	add_codeline(result_codelist, f"    #pragma unroll", 0)
+	add_codeline(result_codelist, f"    for(int repeat=0;repeat<2;repeat++)", 0)
+	add_codeline(result_codelist, f"    {", 0)
+	add_codeline(result_codelist, f"        unsigned temp = __shfl_down_sync(0xffffffff, val, repeat + 1, (repeat + 1)*2);", 0)
+	add_codeline(result_codelist, f"        val |= (temp >> (8* (repeat + 1)));", 0)
+	add_codeline(result_codelist, f"    }", 0)
+	add_codeline(result_codelist, f"    if(threadIdx.x % 4 != 0)", 0)
+	add_codeline(result_codelist, f"        val = 0;", 0)
+	add_codeline(result_codelist, f"    return val;", 0)
+	add_codeline(result_codelist, f"}", 0)
+	add_codeline(result_codelist, f"", 0)
+	add_codeline(result_codelist, f"#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 610)", 0)
+	add_codeline(result_codelist, f"#include <sm_61_intrinsics.h>", 0)
+	add_codeline(result_codelist, f"#endif", 0)
+	add_codeline(result_codelist, f"#include <mma.h>", 0)
+
+
         #Support only one kernel for now
         add_codeline(result_codelist, kernel_intro[0], 0)
         #Nasty getter of variable name for now
