@@ -26,7 +26,8 @@ class Code_replacer:
         return
 
     def generate_codegen_dict(self):
-        in_size = self.compute_dict["in_size"]
+        in_height = self.compute_dict["in_height"]
+        in_width = self.compute_dict["in_width"]
         batch = self.compute_dict["batch"]
         in_channel = self.compute_dict["in_channel"]
         kernel = self.compute_dict["kernel"]
@@ -40,7 +41,7 @@ class Code_replacer:
         chunk = self.schedule_dict["chunk"]
 
 
-        row_tiles = batch * in_size * in_size // self.wmma_m
+        row_tiles = batch * in_height * in_width // self.wmma_m
         warp_row_tiles_stable = min(warp_row_tiles, row_tiles)
         row_warps = row_tiles // warp_row_tiles_stable
         block_row_warps_stable = min(block_row_warps, row_warps)
@@ -63,7 +64,7 @@ class Code_replacer:
 
         codegen_dict = dict()
 
-        if(in_size * batch % (block_row_warps * warp_row_tiles * self.wmma_m) != 0):
+        if(in_width * batch % (block_row_warps * warp_row_tiles * self.wmma_m) != 0):
             codegen_dict["Fallback"] = True
             return codegen_dict
 
@@ -83,9 +84,9 @@ class Code_replacer:
         codegen_dict["K_WARP"] = in_channel
         codegen_dict["IC_OUTER"] = (in_channel // self.wmma_k) // chunk
         codegen_dict["IC_INNER"] = chunk
-        codegen_dict["FEATUREMAP_SIZE"] = in_size
+        codegen_dict["FEATUREMAP_SIZE"] = in_width
         codegen_dict["KERNEL_SIZE"] = kernel
-        codegen_dict["PADDED_SIZE"] = in_size + 2 * padding
+        codegen_dict["PADDED_WIDTH"] = in_width + 2 * padding
         codegen_dict["NUM_IC"] = in_channel
         codegen_dict["NUM_OC"] = num_filter
 
@@ -110,7 +111,7 @@ class Code_replacer:
         IC_INNER = self.codegen_dict["IC_INNER"] 
         FEATUREMAP_SIZE = self.codegen_dict["FEATUREMAP_SIZE"] 
         KERNEL_SIZE = self.codegen_dict["KERNEL_SIZE"] 
-        PADDED_SIZE = self.codegen_dict["PADDED_SIZE"] 
+        PADDED_WIDTH = self.codegen_dict["PADDED_WIDTH"] 
         NUM_IC = self.codegen_dict["NUM_IC"] 
         NUM_OC = self.codegen_dict["NUM_OC"] 
         PACK_RATE = 8
@@ -172,7 +173,7 @@ class Code_replacer:
         ################################################
 
         add_codeline(result_codelist, f"int cur_row = outfeature_row + kh;", 2)
-        add_codeline(result_codelist, f"int featuremap_base_addr = cur_row * {PADDED_SIZE} * {NUM_IC} + outfeature_col * {NUM_IC};", 2)
+        add_codeline(result_codelist, f"int featuremap_base_addr = cur_row * {PADDED_WIDTH} * {NUM_IC} + outfeature_col * {NUM_IC};", 2)
 
 
         featuremap_shared_size_vectorized = featuremap_shared_size // 4
@@ -505,7 +506,8 @@ class Code_replacer:
             tensor_shapes = log_input[2]
 
             featuremap_shape = tensor_shapes[0][1]
-            self.compute_dict["in_size"] = featuremap_shape[0]
+            self.compute_dict["in_height"] = featuremap_shape[0]
+            self.compute_dict["in_width"] = featuremap_shape[1]
             self.compute_dict["batch"] = featuremap_shape[2]
             self.compute_dict["in_channel"] = featuremap_shape[3]
 
