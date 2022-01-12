@@ -64,7 +64,7 @@ class Code_replacer:
 
         codegen_dict = dict()
 
-        if(in_width * batch % (block_row_warps * warp_row_tiles * self.wmma_m) != 0):
+        if((in_width * batch) % (block_row_warps * warp_row_tiles * self.wmma_m) != 0):
             codegen_dict["Fallback"] = True
             return codegen_dict
 
@@ -122,35 +122,35 @@ class Code_replacer:
             codelist.append(indent + codeline + "\n")
 
         result_codelist = []
-
-	add_codeline(result_codelist, f"__device__ inline long max(int a, long b)", 0)
-	add_codeline(result_codelist, f"{{", 0)
-	add_codeline(result_codelist, f"  return max((long)a, b);", 0)
-	add_codeline(result_codelist, f"}}", 0)
-	add_codeline(result_codelist, f"__device__ inline long max(long a, int b)", 0)
-	add_codeline(result_codelist, f"{{", 0)
-	add_codeline(result_codelist, f"  return max(b, a);", 0)
-	add_codeline(result_codelist, f"}}", 0)
-	add_codeline(result_codelist, f"__device__ inline long min(long a, int b)", 0)
-	add_codeline(result_codelist, f"{{", 0)
-	add_codeline(result_codelist, f"  return min(a, (long)b);", 0)
-	add_codeline(result_codelist, f"}}", 0)
-	add_codeline(result_codelist, f"__device__ __inline__ int warpReducePack(unsigned int val) {{", 0)
-	add_codeline(result_codelist, f"    #pragma unroll", 0)
-	add_codeline(result_codelist, f"    for(int repeat=0;repeat<2;repeat++)", 0)
-	add_codeline(result_codelist, f"    {{", 0)
-	add_codeline(result_codelist, f"        unsigned temp = __shfl_down_sync(0xffffffff, val, repeat + 1, (repeat + 1)*2);", 0)
-	add_codeline(result_codelist, f"        val |= (temp >> (8* (repeat + 1)));", 0)
-	add_codeline(result_codelist, f"    }}", 0)
-	add_codeline(result_codelist, f"    if(threadIdx.x % 4 != 0)", 0)
-	add_codeline(result_codelist, f"        val = 0;", 0)
-	add_codeline(result_codelist, f"    return val;", 0)
-	add_codeline(result_codelist, f"}}", 0)
-	add_codeline(result_codelist, f"", 0)
-	add_codeline(result_codelist, f"#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 610)", 0)
-	add_codeline(result_codelist, f"#include <sm_61_intrinsics.h>", 0)
-	add_codeline(result_codelist, f"#endif", 0)
-	add_codeline(result_codelist, f"#include <mma.h>", 0)
+        
+        add_codeline(result_codelist, f"__device__ inline long max(int a, long b)", 0)
+        add_codeline(result_codelist, f"{{", 0)
+        add_codeline(result_codelist, f"return max((long)a, b);", 1)
+        add_codeline(result_codelist, f"}}", 0)
+        add_codeline(result_codelist, f"__device__ inline long max(long a, int b)", 0)
+        add_codeline(result_codelist, f"{{", 0)
+        add_codeline(result_codelist, f"return max(b, a);", 1)
+        add_codeline(result_codelist, f"}}", 0)
+        add_codeline(result_codelist, f"__device__ inline long min(long a, int b)", 0)
+        add_codeline(result_codelist, f"{{", 0)
+        add_codeline(result_codelist, f"return min(a, (long)b);", 1)
+        add_codeline(result_codelist, f"}}", 0)
+        add_codeline(result_codelist, f"__device__ __inline__ int warpReducePack(unsigned int val) {{", 0)
+        add_codeline(result_codelist, f"#pragma unroll", 1)
+        add_codeline(result_codelist, f"for(int repeat=0;repeat<2;repeat++)", 1)
+        add_codeline(result_codelist, f"{{", 1)
+        add_codeline(result_codelist, f"unsigned temp = __shfl_down_sync(0xffffffff, val, repeat + 1, (repeat + 1)*2);", 2)
+        add_codeline(result_codelist, f"val |= (temp >> (8* (repeat + 1)));", 2)
+        add_codeline(result_codelist, f"}}", 1)
+        add_codeline(result_codelist, f"if(threadIdx.x % 4 != 0)", 1)
+        add_codeline(result_codelist, f"val = 0;", 2)
+        add_codeline(result_codelist, f"return val;", 1)
+        add_codeline(result_codelist, f"}}", 0)
+        add_codeline(result_codelist, f"", 0)
+        add_codeline(result_codelist, f"#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 610)", 0)
+        add_codeline(result_codelist, f"#include <sm_61_intrinsics.h>", 0)
+        add_codeline(result_codelist, f"#endif", 0)
+        add_codeline(result_codelist, f"#include <mma.h>", 0)
 
 
         #Support only one kernel for now
@@ -300,7 +300,7 @@ class Code_replacer:
         #should find where ic_outer is on memory space
         #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
 
-        if not (kernel_shared_size > whole_block_load_size):
+        if not (kernel_shared_size >= whole_block_load_size):
             return "Fallback"
 
 
@@ -427,7 +427,7 @@ class Code_replacer:
 
         tiles_for_packing = warp_register_count // packed_tile_register_count
 
-        if not (warp_col_tiles >= tiles_for_packing):
+        if not (warp_col_tiles % tiles_for_packing == 0):
             return "Fallback"
         packing_iter = warp_col_tiles // tiles_for_packing
 
