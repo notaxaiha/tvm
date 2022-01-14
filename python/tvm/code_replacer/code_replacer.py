@@ -173,7 +173,7 @@ class Code_replacer:
         axis_order = ["ic_outer","kh","ic_inner","kw", "tile"]
         axis_size = {"kh": KERNEL_SIZE, "kw": KERNEL_SIZE, "ic_outer": IC_OUTER, "ic_inner": IC_INNER}
 
-        kh_ko_reorder = True
+        kh_ko_reorder = False
         #kw_ki_reorder = False
         if kh_ko_reorder:
             axis_order[0], axis_order[1] = axis_order[1], axis_order[0]
@@ -230,8 +230,8 @@ class Code_replacer:
         kernel_fragments = (K_WARP * N_WARP) // (self.wmma_k * self.wmma_n * IC_OUTER)
 
         warp_size = 32
-        whole_block_load_size = (block_row_warps * block_col_warps * warp_size)
-        inner_block_load_size = (block_col_warps * warp_size)
+        whole_block_load_size = (block_col_warps * block_row_warps * warp_size)
+        inner_block_load_size = (block_row_warps * warp_size)
         whole_warp_load_size = warp_size
 
         add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::accumulator, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, int> Conv_wmma_accumulator[{accum_fragments}];")
@@ -286,7 +286,7 @@ class Code_replacer:
             for dimension_name in dimension_names_shared:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
                 add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 3)
-                denominator = int(denominator * dimension_size)
+                denominator *= dimension_size
             add_codeline(result_codelist, f"bool out_of_bound = addressing_space > {denominator};", 3)
             add_codeline(result_codelist, "if (out_of_bound)", 3)
             add_codeline(result_codelist, "break;", 4)
@@ -323,8 +323,78 @@ class Code_replacer:
         ################################################
         ################################################
 
-        add_codeline(result_codelist, f"#pragma unroll",2)
-        add_codeline(result_codelist, f"for (int ic_outer = 0; ic_outer < {IC_OUTER}; ic_outer++) {{",2)
+        second_axis_name = axis_order[1]
+        second_axis_size = axis_size[second_axis_name]
+        add_codeline(result_codelist, f"#pragma unroll", 2)
+        add_codeline(result_codelist, f"for (int {second_axis_name} = 0; {second_axis_name} < {second_axis_size}; {second_axis_name}++) {{", 2)
+
+        if compute_at["featuremap_shared"] == second_axis_name:
+            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {PADDED_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+
+            first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
+            global_base_addr_string += f" + {first_axis_name} * {first_axis_base}"
+
+            second_axis_base = get_dimension_base(memory_layout["featuremap_global"], second_axis_name)
+            global_base_addr_string += f" + {second_axis_name} * {second_axis_base};"
+
+            add_codeline(result_codelist, global_base_addr_string, 3)
+
+
+            ###############TODO:vectorized load###################
+            #featuremap_shared_size_vectorized = featuremap_shared_size
+            #load_iter = featuremap_shared_size_vectorized // whole_block_load_size
+            ######################################################
+
+            load_iter = featuremap_shared_size // whole_block_load_size
+            add_codeline(result_codelist, "#pragma unroll",3)
+            add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{", 3)
+            add_codeline(result_codelist, f"int addressing_space = load_iter * {block_col_warps} * {block_row_warps} * {warp_size} + threadIdx.z * {block_row_warps} * {warp_size} + threadIdx.y * {warp_size} + threadIdx.x;" , 4)
+
+            dimension_names_shared = [dimension_name for (dimension_name, size) in memory_layout["featuremap_shared"]]
+            dimension_names_shared = dimension_names_shared[::-1]
+            denominator = 1
+            for dimension_name in dimension_names_shared:
+                dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
+                add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 4)
+                denominator *= dimension_size
+            add_codeline(result_codelist, f"bool out_of_bound = addressing_space > {denominator};", 4)
+            add_codeline(result_codelist, "if (out_of_bound)", 4)
+            add_codeline(result_codelist, "break;", 5)
+
+            dimension_name = dimension_names_shared[0]
+            dimension_base  = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+            dst_addr_line = f"int dst_addr = {dimension_name}_dimension * {dimension_base}"
+            for dimension_name in dimension_names_shared[1:]:
+                dimension_base = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+                dst_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
+            dst_addr_line += ";"
+            add_codeline(result_codelist, dst_addr_line, 4)
+
+
+            dimension_names_global = [dimension_name for (dimension_name, size) in memory_layout["featuremap_global"]]
+            dimension_names_global = dimension_names_global[::-1]
+            src_addr_line = "int src_addr = featuremap_global_base"
+            for dimension_name in dimension_names_global:
+                #current load space is on featuremap_shared
+                if dimension_name in scope["featuremap_shared"]:
+                    dimension_base = get_dimension_base(memory_layout["featuremap_global"], dimension_name)
+                    src_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
+            src_addr_line += ";"
+            add_codeline(result_codelist, src_addr_line,4)
+
+            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = {input_featuremap_name}[src_addr];", 4)
+            add_codeline(result_codelist, f"}}", 3)
+            add_codeline(result_codelist, f"__syncthreads();", 3)
+
+
+        ################################################
+        ################################################
+        ################# Third loop  ##################
+        ################################################
+        ################################################
+
+
         add_codeline(result_codelist, f"#pragma unroll",3)
         add_codeline(result_codelist, f"for (int kw = 0; kw < {KERNEL_SIZE}; kw++) {{",3)
         add_codeline(result_codelist, f"__syncthreads();",4)
@@ -336,14 +406,26 @@ class Code_replacer:
         ################################################
         ################################################
 
-        fragment_size = self.wmma_m * self.wmma_k // PACK_RATE
         add_codeline(result_codelist, f"if (kw==0) {{",4)
         add_codeline(result_codelist, f"#pragma unroll",5)
         add_codeline(result_codelist, f"for(int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",5)
         add_codeline(result_codelist, f"int shared_mem_idx = (threadIdx.y * {warp_row_tiles} + row_iter);",6)
         add_codeline(result_codelist, f"#pragma unroll",6)
         add_codeline(result_codelist, f"for(int ic_inner = 0; ic_inner < {IC_INNER}; ic_inner++)",6)
-        add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[row_iter * {IC_INNER} + ic_inner], ((int *)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {fragment_size}) + (ic_outer * {IC_INNER} * {fragment_size}) + (ic_inner * {fragment_size})), 32);", 7)
+
+        featuremap_load_str = f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[row_iter * {IC_INNER} + ic_inner], ((int *)featuremap_shared"
+        dimension_names_shared = [dimension_name for (dimension_name, size) in memory_layout["featuremap_shared"]]
+        dimension_names_shared = dimension_names_shared[::-1]
+        denominator = 1
+        for dimension_name in dimension_names_shared:
+            if dimension_name == "tile":
+                continue
+            dimension_base = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+            dimension_name = "shared_mem_idx" if dimension_name == "kw" else dimension_name
+            featuremap_load_str += f" + {dimension_name} * {dimension_base}"
+        featuremap_load_str += f"), 32);"
+        add_codeline(result_codelist, featuremap_load_str, 7)
+        #add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[row_iter * {IC_INNER} + ic_inner], ((int*)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {fragment_size}) + (ic_outer * {IC_INNER} * {fragment_size}) + (ic_inner * {fragment_size})), 32);", 7)
         add_codeline(result_codelist, f"}}",5)
         add_codeline(result_codelist, f"}}",4)
 
@@ -352,9 +434,34 @@ class Code_replacer:
         add_codeline(result_codelist, f"#pragma unroll",5)
         add_codeline(result_codelist, f"for(int ic_inner = 0; ic_inner < {IC_INNER}; ic_inner++)",5)
         if warp_row_tiles != 1:
-            add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[(kw - 1) * {IC_INNER} + ic_inner], ((int*)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {fragment_size}) + (ic_outer * {IC_INNER} * {fragment_size}) + (ic_inner * {fragment_size})), 32);",6)
+            featuremap_load_str = f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[(kw - 1) * {IC_INNER} + ic_inner], ((int*)featuremap_shared"
+            dimension_names_shared = [dimension_name for (dimension_name, size) in memory_layout["featuremap_shared"]]
+            dimension_names_shared = dimension_names_shared[::-1]
+            denominator = 1
+            for dimension_name in dimension_names_shared:
+                if dimension_name == "tile":
+                    continue
+                dimension_base = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+                dimension_name = "shared_mem_idx" if dimension_name == "kw" else dimension_name
+                featuremap_load_str += f" + {dimension_name} * {dimension_base}"
+            featuremap_load_str += f"), 32);"
+            add_codeline(result_codelist, featuremap_load_str, 6)
+            #add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[(kw - 1) * {IC_INNER} + ic_inner], ((int*)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {fragment_size}) + (ic_outer * {IC_INNER} * {fragment_size}) + (ic_inner * {fragment_size})), 32);",6)
+
         else:
-            add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[ic_inner], ((int*)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {fragment_size}) + (ic_outer * {IC_INNER} * {fragment_size}) + (ic_inner * {fragment_size})), 32);",6)
+            featuremap_load_str = f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[ic_inner], ((int*)featuremap_shared"
+            dimension_names_shared = [dimension_name for (dimension_name, size) in memory_layout["featuremap_shared"]]
+            dimension_names_shared = dimension_names_shared[::-1]
+            denominator = 1
+            for dimension_name in dimension_names_shared:
+                if dimension_name == "tile":
+                    continue
+                dimension_base = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+                dimension_name = "shared_mem_idx" if dimension_name == "kw" else dimension_name
+                featuremap_load_str += f" + {dimension_name} * {dimension_base}"
+            featuremap_load_str += f"), 32);"
+            add_codeline(result_codelist, featuremap_load_str, 6)
+            #add_codeline(result_codelist, f"(void)nvcuda::wmma::load_matrix_sync(featuremap_frag[ic_inner], ((int*)featuremap_shared + (shared_mem_idx * {IC_OUTER} * {IC_INNER} * {fragment_size}) + (ic_outer * {IC_INNER} * {fragment_size}) + (ic_inner * {fragment_size})), 32);",6)
 
         add_codeline(result_codelist, f"}}",4)
         add_codeline(result_codelist, f"__syncthreads();",4)
