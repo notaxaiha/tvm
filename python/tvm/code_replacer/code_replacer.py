@@ -181,7 +181,7 @@ class Code_replacer:
             #axis_order[2], axis_order[3] = axis_order[3], axis_order[2]
 
         memory_layout = dict()
-        memory_layout["featuremap_global"] = [("kh", PADDED_HEIGHT), ("kw", PADDED_WIDTH), ("ic_outer", IC_OUTER), ("ic_inner", IC_INNER), ("tile", self.wmma_m * self.wmma_n // PACK_RATE)]
+        memory_layout["featuremap_global"] = [("kh", PADDED_HEIGHT), ("kw", PADDED_WIDTH), ("ic_outer", IC_OUTER), ("ic_inner", IC_INNER), ("tile", self.wmma_m * self.wmma_k // PACK_RATE)]
         memory_layout["featuremap_shared_dummy"] = [("kh", KERNEL_SIZE), ("kw", TB_ROW_COVER + KERNEL_SIZE - 1), ("ic_outer", IC_OUTER), ("ic_inner", IC_INNER), ("tile", self.wmma_m * self.wmma_k // PACK_RATE)]
 
         compute_at = dict()
@@ -263,10 +263,11 @@ class Code_replacer:
         #block_col_warps, block_row_warps, warp_size
 
         if compute_at["featuremap_shared"] == first_axis_name:
-            add_codeline(result_codelist, f"int featuremap_global_base = outfeature_row * {PADDED_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_n // PACK_RATE};", 2)
-            add_codeline(result_codelist, f"featuremap_global_base += outfeature_col* {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_n // PACK_RATE};",2)
+            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {PADDED_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
-            add_codeline(result_codelist, f"featuremap_global_base += {first_axis_name} * {first_axis_base};",2)
+            global_base_addr_string += f" + {first_axis_name} * {first_axis_base};"
+            add_codeline(result_codelist, global_base_addr_string, 2)
             
             
             ###############TODO:vectorized load###################
@@ -275,6 +276,7 @@ class Code_replacer:
             ######################################################
 
             load_iter = featuremap_shared_size // whole_block_load_size
+            add_codeline(result_codelist, "#pragma unroll", 2)
             add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{", 2)
             add_codeline(result_codelist, f"int addressing_space = load_iter * {block_col_warps} * {block_row_warps} * {warp_size} + threadIdx.z * {block_row_warps} * {warp_size} + threadIdx.y * {warp_size} + threadIdx.x;", 3)
             
@@ -312,6 +314,7 @@ class Code_replacer:
 
             add_codeline(result_codelist, f"featuremap_shared[dst_addr] = {input_featuremap_name}[src_addr];", 3)
             add_codeline(result_codelist, f"}}",2)
+            add_codeline(result_codelist, f"__syncthreads();",2)
 
 
         ################################################
