@@ -85,12 +85,12 @@ class Code_replacer:
         codegen_dict["K_WARP"] = in_channel
         codegen_dict["IC_OUTER"] = (in_channel // self.wmma_k) // chunk
         codegen_dict["IC_INNER"] = chunk
-        codegen_dict["FEATUREMAP_SIZE"] = in_width
+        codegen_dict["FEATUREMAP_WIDTH"] = in_width
+        codegen_dict["FEATUREMAP_HEIGHT"] = in_height
         codegen_dict["KERNEL_SIZE"] = kernel
-        codegen_dict["PADDED_WIDTH"] = in_width + 2 * padding
-        codegen_dict["PADDED_HEIGHT"] = in_height + 2 * padding
         codegen_dict["NUM_IC"] = in_channel
         codegen_dict["NUM_OC"] = num_filter
+        codegen_dict["PADDING"] = padding
 
         return codegen_dict
 
@@ -111,12 +111,12 @@ class Code_replacer:
         K_WARP = self.codegen_dict["K_WARP"] 
         IC_OUTER = self.codegen_dict["IC_OUTER"] 
         IC_INNER = self.codegen_dict["IC_INNER"] 
-        FEATUREMAP_SIZE = self.codegen_dict["FEATUREMAP_SIZE"] 
+        FEATUREMAP_WIDTH = self.codegen_dict["FEATUREMAP_WIDTH"] 
+        FEATUREMAP_HEIGHT = self.codegen_dict["FEATUREMAP_HEIGHT"] 
         KERNEL_SIZE = self.codegen_dict["KERNEL_SIZE"] 
-        PADDED_WIDTH = self.codegen_dict["PADDED_WIDTH"] 
-        PADDED_HEIGHT = self.codegen_dict["PADDED_HEIGHT"] 
         NUM_IC = self.codegen_dict["NUM_IC"] 
         NUM_OC = self.codegen_dict["NUM_OC"] 
+        PADDING = self.codegen_dict["PADDING"] 
         PACK_RATE = 8
 
         manual_correctness_check = False
@@ -175,15 +175,15 @@ class Code_replacer:
         axis_order = ["ic_outer","kh","ic_inner","kw", "tile"]
         axis_size = {"kh": KERNEL_SIZE, "kw": KERNEL_SIZE, "ic_outer": IC_OUTER, "ic_inner": IC_INNER}
 
-        kh_ko_reorder = True
+        ko_kh_reorder = True
         #kw_ki_reorder = False
-        if kh_ko_reorder:
+        if ko_kh_reorder:
             axis_order[0], axis_order[1] = axis_order[1], axis_order[0]
         #if kw_ki_reorder:
             #axis_order[2], axis_order[3] = axis_order[3], axis_order[2]
 
         memory_layout = dict()
-        memory_layout["featuremap_global"] = [("kh", PADDED_HEIGHT), ("kw", PADDED_WIDTH), ("ic_outer", IC_OUTER), ("ic_inner", IC_INNER), ("tile", self.wmma_m * self.wmma_k // PACK_RATE)]
+        memory_layout["featuremap_global"] = [("kh", FEATUREMAP_HEIGHT), ("kw", FEATUREMAP_WIDTH), ("ic_outer", IC_OUTER), ("ic_inner", IC_INNER), ("tile", self.wmma_m * self.wmma_k // PACK_RATE)]
         memory_layout["featuremap_shared_dummy"] = [("kh", KERNEL_SIZE), ("kw", TB_ROW_COVER + KERNEL_SIZE - 1), ("ic_outer", IC_OUTER), ("ic_inner", IC_INNER), ("tile", self.wmma_m * self.wmma_k // PACK_RATE)]
 
         compute_at = dict()
@@ -243,15 +243,14 @@ class Code_replacer:
             add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::u4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
         else:
             add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::s4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
-        add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::u4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
         add_codeline(result_codelist, f"__shared__ int kernel_shared[{kernel_shared_size}];")
         add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::s4, nvcuda::wmma::col_major> kernel_frag[{kernel_fragments}];")
         add_codeline(result_codelist, f"#pragma unroll")
         add_codeline(result_codelist, f"for (int o_c_init = 0; o_c_init < {accum_fragments}; ++o_c_init) {{")
         add_codeline(result_codelist, f"(void)nvcuda::wmma::fill_fragment(Conv_wmma_accumulator[o_c_init], 0.000000e+00f);", 2)
         add_codeline(result_codelist, f"}}")
-        add_codeline(result_codelist, f"int outfeature_row = (blockIdx.x * {TB_ROW_COVER}) / {FEATUREMAP_SIZE};")
-        add_codeline(result_codelist, f"int outfeature_col = (blockIdx.x * {TB_ROW_COVER}) % {FEATUREMAP_SIZE};")
+        add_codeline(result_codelist, f"int outfeature_row = (blockIdx.x * {TB_ROW_COVER}) / {FEATUREMAP_WIDTH};")
+        add_codeline(result_codelist, f"int outfeature_col = (blockIdx.x * {TB_ROW_COVER}) % {FEATUREMAP_WIDTH};")
 
         ################################################
         ################################################
@@ -268,7 +267,7 @@ class Code_replacer:
         #block_col_warps, block_row_warps, warp_size
 
         if compute_at["featuremap_shared"] == first_axis_name:
-            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {PADDED_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {FEATUREMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
             global_base_addr_string += f" + {first_axis_name} * {first_axis_base};"
@@ -292,8 +291,8 @@ class Code_replacer:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
                 add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 3)
                 denominator *= dimension_size
-            add_codeline(result_codelist, f"bool out_of_bound = addressing_space > {denominator};", 3)
-            add_codeline(result_codelist, "if (out_of_bound)", 3)
+            add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 3)
+            add_codeline(result_codelist, "if (out_of_shmem_bound)", 3)
             add_codeline(result_codelist, "break;", 4)
 
             dimension_name = dimension_names_shared[0]
@@ -314,11 +313,18 @@ class Code_replacer:
                 if dimension_name in scope["featuremap_shared"]:
                     dimension_base = get_dimension_base(memory_layout["featuremap_global"], dimension_name)
                     src_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
+            src_addr_line += f" - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC}"
             src_addr_line += ";"
             add_codeline(result_codelist, src_addr_line, 3)
 
             #####################int pointer for correctness check###################
-            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = ((int*){input_featuremap_name})[src_addr];", 3)
+            if ko_kh_reorder:
+                kh_axis_name = "kh"
+            else:
+                kh_axis_name = "kh_dimension"
+            add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + {kh_axis_name})) && ((outfeature_row + {kh_axis_name}) < {PADDING} + {FEATUREMAP_HEIGHT});",3)
+            add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} + {FEATUREMAP_WIDTH});",3)
+            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? ((int*){input_featuremap_name})[src_addr] : 0;", 3)
             add_codeline(result_codelist, f"}}",2)
             add_codeline(result_codelist, f"__syncthreads();",2)
 
@@ -335,7 +341,7 @@ class Code_replacer:
         add_codeline(result_codelist, f"for (int {second_axis_name} = 0; {second_axis_name} < {second_axis_size}; {second_axis_name}++) {{", 2)
 
         if compute_at["featuremap_shared"] == second_axis_name:
-            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {PADDED_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {FEATURMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
 
             first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
@@ -364,8 +370,8 @@ class Code_replacer:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
                 add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 4)
                 denominator *= dimension_size
-            add_codeline(result_codelist, f"bool out_of_bound = addressing_space > {denominator};", 4)
-            add_codeline(result_codelist, "if (out_of_bound)", 4)
+            add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 4)
+            add_codeline(result_codelist, "if (out_of_shmem_bound)", 4)
             add_codeline(result_codelist, "break;", 5)
 
             dimension_name = dimension_names_shared[0]
@@ -386,10 +392,13 @@ class Code_replacer:
                 if dimension_name in scope["featuremap_shared"]:
                     dimension_base = get_dimension_base(memory_layout["featuremap_global"], dimension_name)
                     src_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
+            src_addr_line += f" - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC}"
             src_addr_line += ";"
             add_codeline(result_codelist, src_addr_line,4)
 
-            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = {input_featuremap_name}[src_addr];", 4)
+            add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + kh)) && ((outfeature_row + kh) < {PADDING} * {FEATUREMAP_HEIGHT});", 4)
+            add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} * {FEATUREMAP_WIDTH});", 4)
+            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? (int*){input_featuremap_name}[src_addr] : 0;", 4)
             add_codeline(result_codelist, f"}}", 3)
             add_codeline(result_codelist, f"__syncthreads();", 3)
 
