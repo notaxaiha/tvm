@@ -119,6 +119,8 @@ class Code_replacer:
         NUM_OC = self.codegen_dict["NUM_OC"] 
         PACK_RATE = 8
 
+        manual_correctness_check = False
+
 
         def add_codeline(codelist, codeline, indent_level=1):
             indent = "\t" * indent_level
@@ -173,7 +175,7 @@ class Code_replacer:
         axis_order = ["ic_outer","kh","ic_inner","kw", "tile"]
         axis_size = {"kh": KERNEL_SIZE, "kw": KERNEL_SIZE, "ic_outer": IC_OUTER, "ic_inner": IC_INNER}
 
-        kh_ko_reorder = False
+        kh_ko_reorder = True
         #kw_ki_reorder = False
         if kh_ko_reorder:
             axis_order[0], axis_order[1] = axis_order[1], axis_order[0]
@@ -236,9 +238,12 @@ class Code_replacer:
 
         add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::accumulator, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, int> Conv_wmma_accumulator[{accum_fragments}];")
         add_codeline(result_codelist, f"__shared__ int featuremap_shared[{featuremap_shared_size}];")
-        add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::s4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
-        ########using u4 on featuremap for correctness check
-        #add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::u4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
+        if manual_correctness_check:
+            ########using u4 on featuremap for correctness check
+            add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::u4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
+        else:
+            add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::s4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
+        add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::u4, nvcuda::wmma::row_major> featuremap_frag[{featuremap_fragments}];")
         add_codeline(result_codelist, f"__shared__ int kernel_shared[{kernel_shared_size}];")
         add_codeline(result_codelist, f"nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, {self.wmma_m}, {self.wmma_n}, {self.wmma_k}, nvcuda::wmma::experimental::precision::s4, nvcuda::wmma::col_major> kernel_frag[{kernel_fragments}];")
         add_codeline(result_codelist, f"#pragma unroll")
@@ -312,7 +317,8 @@ class Code_replacer:
             src_addr_line += ";"
             add_codeline(result_codelist, src_addr_line, 3)
 
-            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = {input_featuremap_name}[src_addr];", 3)
+            #####################int pointer for correctness check###################
+            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = ((int*){input_featuremap_name})[src_addr];", 3)
             add_codeline(result_codelist, f"}}",2)
             add_codeline(result_codelist, f"__syncthreads();",2)
 
@@ -479,6 +485,7 @@ class Code_replacer:
         #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
 
         if not (kernel_shared_size >= whole_block_load_size):
+            print("kernel_shared_size >= whole_block_load_size")
             return "Fallback"
 
 
@@ -623,9 +630,9 @@ class Code_replacer:
         add_codeline(result_codelist, f"partial_packed <<= 4;", 5)
         add_codeline(result_codelist, f"int outval = Conv_wmma_accumulator[row_iter * {warp_col_tiles} + packing_iter * {tiles_for_packing} + output_tile_iter].x[elem_iter];", 5)
         #add_codeline(result_codelist, f"outval += ((int*)bias)[2*threadIdx.x + elem_iter];", 5)
-        #this line is required for correctness check 
-        #add_codeline(result_codelist, f"outval = min(((max(outval, 0) << (long)4) * (long)1241513984 + (long)1073741824) >> (long)31, 15);", 5)
-        #this line is required for correctness check 
+        if manual_correctness_check:
+            #this line is required for correctness check 
+            add_codeline(result_codelist, f"outval = min(((max(outval, 0) << (long)4) * (long)1241513984 + (long)1073741824) >> (long)31, 15);", 5)
         add_codeline(result_codelist, f"outval &= 0xf;", 5)
         add_codeline(result_codelist, f"partial_packed |= outval;", 5)
         add_codeline(result_codelist, f"}}",4)
