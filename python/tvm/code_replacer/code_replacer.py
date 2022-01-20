@@ -731,8 +731,9 @@ class Code_replacer:
 
         #For now, just dump generated code
         self.dumpcode = result_code
-
-        return self.code
+        
+        return result_code
+        # return self.code
 
     def code_replace_with_log_file(self, code, log_path):
         self.code = code
