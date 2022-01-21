@@ -62,6 +62,23 @@ class Code_replacer:
         block_col_warps = block_col_warps_stable
         chunk = chunk_stable
 
+        print("============== Binding Info ===============")
+        print("BlockIdx.x : ", row_blocks)
+        print("BlockIdx.y : ", col_blocks)
+        print("BlockIdx.z : ", 1)
+        print("ThreadIdx.x : ", 32)
+        print("ThreadIdx.y : ", block_row_warps)
+        print("ThreadIdx.z : ", block_col_warps)
+        print("===========================================")
+
+        f = open("/tmp/index.txt", 'w')
+        f.write("%d\n" %row_blocks)
+        f.write("%d\n" %col_blocks)
+        f.write("%d\n" %1)
+        f.write("%d\n" %32)
+        f.write("%d\n" %block_row_warps)
+        f.write("%d\n" %block_col_warps)
+        f.close()
 
         codegen_dict = dict()
 
@@ -672,8 +689,9 @@ class Code_replacer:
 
         #For now, just dump generated code
         self.dumpcode = result_code
-
-        return self.code
+        
+        return result_code
+        # return self.code
 
     def code_replace_with_log_file(self, code, log_path):
         self.code = code
