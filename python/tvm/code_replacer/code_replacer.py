@@ -192,6 +192,7 @@ class Code_replacer:
         axis_order = ["ic_outer","kh","ic_inner","kw", "tile"]
         axis_size = {"kh": KERNEL_SIZE, "kw": KERNEL_SIZE, "ic_outer": IC_OUTER, "ic_inner": IC_INNER}
 
+        vectorized_load = True
         ko_kh_reorder = True
         #kw_ki_reorder = False
         if ko_kh_reorder:
@@ -284,19 +285,22 @@ class Code_replacer:
         #block_col_warps, block_row_warps, warp_size
 
         if compute_at["featuremap_shared"] == first_axis_name:
-            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {FEATUREMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string = f"int featuremap_global_base = (outfeature_row * {FEATUREMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
-            global_base_addr_string += f" + {first_axis_name} * {first_axis_base};"
+            global_base_addr_string += f" + {first_axis_name} * {first_axis_base})"
+            if vectorized_load:
+                global_base_addr_string += f"/4"
+            global_base_addr_string += f";"
             add_codeline(result_codelist, global_base_addr_string, 2)
             
-            
-            ###############TODO:vectorized load###################
-            #featuremap_shared_size_vectorized = featuremap_shared_size
-            #load_iter = featuremap_shared_size_vectorized // whole_block_load_size
-            ######################################################
 
-            load_iter = -(featuremap_shared_size // -whole_block_load_size)
+            if vectorized_load:          
+                featuremap_shared_size_vectorized = featuremap_shared_size//4
+                load_iter = -(featuremap_shared_size_vectorized // -whole_block_load_size)
+            else:
+                load_iter = -(featuremap_shared_size // -whole_block_load_size)
+
             add_codeline(result_codelist, "#pragma unroll", 2)
             add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{", 2)
             add_codeline(result_codelist, f"int addressing_space = load_iter * {block_col_warps} * {block_row_warps} * {warp_size} + threadIdx.z * {block_row_warps} * {warp_size} + threadIdx.y * {warp_size} + threadIdx.x;", 3)
@@ -306,6 +310,8 @@ class Code_replacer:
             denominator = 1
             for dimension_name in dimension_names_shared:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
+                if vectorized_load and dimension_name == "tile":
+                    dimension_size //= 4
                 add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 3)
                 denominator *= dimension_size
             add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 3)
@@ -317,6 +323,8 @@ class Code_replacer:
             dst_addr_line = f"int dst_addr = {dimension_name}_dimension * {dimension_base}"
             for dimension_name in dimension_names_shared[1:]:
                 dimension_base = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+                if vectorized_load and dimension_name != "tile":
+                    dimension_base //= 4
                 dst_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             dst_addr_line += ";"
             add_codeline(result_codelist, dst_addr_line, 3)
@@ -329,19 +337,26 @@ class Code_replacer:
                 # current load scope is on featuremap_shared
                 if dimension_name in scope["featuremap_shared"]:
                     dimension_base = get_dimension_base(memory_layout["featuremap_global"], dimension_name)
+                    if vectorized_load and dimension_name != "tile":
+                        dimension_base //= 4
                     src_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             src_addr_line += f" - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC}"
+            if vectorized_load:
+                src_addr_line += " / 4"
             src_addr_line += ";"
             add_codeline(result_codelist, src_addr_line, 3)
 
-            #####################int pointer for correctness check###################
             if ko_kh_reorder:
                 kh_axis_name = "kh"
             else:
                 kh_axis_name = "kh_dimension"
             add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + {kh_axis_name})) && ((outfeature_row + {kh_axis_name}) < {PADDING} + {FEATUREMAP_HEIGHT});",3)
             add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} + {FEATUREMAP_WIDTH});",3)
-            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? ((int*){input_featuremap_name})[src_addr] : 0;", 3)
+            if vectorized_load:
+                add_codeline(result_codelist, f"int4 zeros = {{0,0,0,0}};",3)
+                add_codeline(result_codelist, f"((int4*)featuremap_shared)[dst_addr] = (inside_gmem_bound) ? ((int4*){input_featuremap_name})[src_addr] : zeros;", 3)
+            else:
+                add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? ((int*){input_featuremap_name})[src_addr] : 0;", 3)
             add_codeline(result_codelist, f"}}",2)
             add_codeline(result_codelist, f"__syncthreads();",2)
 
@@ -358,24 +373,27 @@ class Code_replacer:
         add_codeline(result_codelist, f"for (int {second_axis_name} = 0; {second_axis_name} < {second_axis_size}; {second_axis_name}++) {{", 2)
 
         if compute_at["featuremap_shared"] == second_axis_name:
-            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {FEATURMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string = f"int featuremap_global_base = (outfeature_row * {FEATURMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
 
             first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
             global_base_addr_string += f" + {first_axis_name} * {first_axis_base}"
 
             second_axis_base = get_dimension_base(memory_layout["featuremap_global"], second_axis_name)
-            global_base_addr_string += f" + {second_axis_name} * {second_axis_base};"
+            global_base_addr_string += f" + {second_axis_name} * {second_axis_base})"
+            if vectorized_load:
+                global_base_addr_string += "/4"
+            global_base_addr_string += ";"
 
             add_codeline(result_codelist, global_base_addr_string, 3)
 
 
-            ###############TODO:vectorized load###################
-            #featuremap_shared_size_vectorized = featuremap_shared_size
-            #load_iter = featuremap_shared_size_vectorized // whole_block_load_size
-            ######################################################
+            if vectorized_load:
+                featuremap_shared_size_vectorized = featuremap_shared_size//4
+                load_iter = -(featuremap_shared_size_vectorized // -whole_block_load_size)
+            else:
+                load_iter = -(featuremap_shared_size // -whole_block_load_size)
 
-            load_iter = -(featuremap_shared_size // -whole_block_load_size)
             add_codeline(result_codelist, "#pragma unroll",3)
             add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{", 3)
             add_codeline(result_codelist, f"int addressing_space = load_iter * {block_col_warps} * {block_row_warps} * {warp_size} + threadIdx.z * {block_row_warps} * {warp_size} + threadIdx.y * {warp_size} + threadIdx.x;" , 4)
@@ -385,6 +403,8 @@ class Code_replacer:
             denominator = 1
             for dimension_name in dimension_names_shared:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
+                if vectorized_load and dimension_name == "tile":
+                    dimension_size //= 4
                 add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 4)
                 denominator *= dimension_size
             add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 4)
@@ -396,6 +416,8 @@ class Code_replacer:
             dst_addr_line = f"int dst_addr = {dimension_name}_dimension * {dimension_base}"
             for dimension_name in dimension_names_shared[1:]:
                 dimension_base = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+                if vectorized_load and dimension_name != "tile":
+                    dimension_base //= 4
                 dst_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             dst_addr_line += ";"
             add_codeline(result_codelist, dst_addr_line, 4)
@@ -408,14 +430,22 @@ class Code_replacer:
                 #current load space is on featuremap_shared
                 if dimension_name in scope["featuremap_shared"]:
                     dimension_base = get_dimension_base(memory_layout["featuremap_global"], dimension_name)
+                    if vectorized_load and dimension_name != "tile":
+                        dimension_base //= 4
                     src_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             src_addr_line += f" - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC}"
+            if vectorized_load:
+                src_addr_lie += " / 4"
             src_addr_line += ";"
             add_codeline(result_codelist, src_addr_line,4)
 
             add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + kh)) && ((outfeature_row + kh) < {PADDING} * {FEATUREMAP_HEIGHT});", 4)
             add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} * {FEATUREMAP_WIDTH});", 4)
-            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? (int*){input_featuremap_name}[src_addr] : 0;", 4)
+            if vectorized_load:
+                add_codeline(result_codelist, f"int4 zeros = {{0,0,0,0}};", 3)
+                add_codeline(result_codelist, f"((int4*)featuremap_shared)[dst_addr] = (inside_gmem_bound) ? ((int4*){input_featuremap_name})[src_addr] : zeros;", 4)
+            else:
+                add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? ((int*){input_featuremap_name})[src_addr] : 0;", 4)
             add_codeline(result_codelist, f"}}", 3)
             add_codeline(result_codelist, f"__syncthreads();", 3)
 
@@ -509,6 +539,8 @@ class Code_replacer:
 
         #should find where ic_outer is on memory space
         #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
+        #global: h * w * col_blocks * block_col_warps * warp_col_tiles * IC_OUTER * IC_INNER * wmma.n * wmma.k
+        #shared: block_col_warps * warp_col_tiles * IC_INNER * wmma.n * wmma.k
         ########ic_outer is base addr
         global_kh_dimension_size = KERNEL_SIZE * NUM_OC * NUM_IC // PACK_RATE
         global_kw_dimension_size = NUM_OC * NUM_IC // PACK_RATE
@@ -691,7 +723,7 @@ class Code_replacer:
         self.dumpcode = result_code
         
         return result_code
-        # return self.code
+        #return self.code
 
     def code_replace_with_log_file(self, code, log_path):
         self.code = code
