@@ -547,15 +547,24 @@ class Code_replacer:
         global_oc_block_size = N_TB * NUM_IC // PACK_RATE
         global_ic_outer_size = IC_INNER * self.wmma_n * self.wmma_k // PACK_RATE
 
-        add_codeline(result_codelist, f"int kernel_global_base = (kh * {global_kh_dimension_size}) + (kw * {global_kw_dimension_size}) + (blockIdx.y * {global_oc_block_size}) + (ic_outer * {global_ic_outer_size});",4)
+        if vectorized_load:
+            add_codeline(result_codelist, f"int kernel_global_base = ((kh * {global_kh_dimension_size}) + (kw * {global_kw_dimension_size}) + (blockIdx.y * {global_oc_block_size}) + (ic_outer * {global_ic_outer_size})) / 4;",4)
+        else:
+            add_codeline(result_codelist, f"int kernel_global_base = (kh * {global_kh_dimension_size}) + (kw * {global_kw_dimension_size}) + (blockIdx.y * {global_oc_block_size}) + (ic_outer * {global_ic_outer_size});",4)
 
-        load_iter = -(kernel_shared_size // -whole_block_load_size)
+        if vectorized_load:
+            kernel_shared_size_vectorized = kernel_shared_size // 4
+            load_iter = -(kernel_shared_size_vectorized // -whole_block_load_size)
+        else:
+            load_iter = -(kernel_shared_size // -whole_block_load_size)
         add_codeline(result_codelist, f"#pragma unroll",4)
         add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{",4)
         add_codeline(result_codelist, f"int addressing_space = load_iter * {block_col_warps} * {block_row_warps} * {warp_size} + threadIdx.z * {block_row_warps} * {warp_size} + threadIdx.y * {warp_size} + threadIdx.x;",5)
 
         denominator = 1
         tile_size = self.wmma_n * self.wmma_k // PACK_RATE
+        if vectorized_load:
+            tile_size //= 4
         add_codeline(result_codelist, f"int tile_dimension = (addressing_space / {denominator}) % {tile_size};",5)
 
         denominator *= tile_size
@@ -572,7 +581,10 @@ class Code_replacer:
         add_codeline(result_codelist, f"break;", 6)
         add_codeline(result_codelist, f"int kernel_dst_addr = tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {ic_inner_size} * {tile_size};", 5)
         add_codeline(result_codelist, f"int kernel_src_addr = kernel_global_base + tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {IC_OUTER} * {IC_INNER} * {tile_size};", 5)
-        add_codeline(result_codelist, f"kernel_shared[kernel_dst_addr] = ((int*){input_kernel_name})[kernel_src_addr];", 5)
+        if vectorized_load:
+            add_codeline(result_codelist, f"((int4*)kernel_shared)[kernel_dst_addr] = ((int4*){input_kernel_name})[kernel_src_addr];", 5)
+        else:
+            add_codeline(result_codelist, f"kernel_shared[kernel_dst_addr] = ((int*){input_kernel_name})[kernel_src_addr];", 5)
         add_codeline(result_codelist, f"}}",4)
         add_codeline(result_codelist, f"__syncthreads();",4)
 
