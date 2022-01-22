@@ -41,6 +41,9 @@ class Code_replacer:
         warp_col_tiles = self.schedule_dict["warp_col_tiles"]
         chunk = self.schedule_dict["chunk"]
 
+        reorder_inner = self.schedule_dict["reorder_inner"]
+        ko_kh_reorder = True if reorder_inner == [1,0] else False
+
 
         row_tiles = batch * in_height * in_width // self.wmma_m
         warp_row_tiles_stable = min(warp_row_tiles, row_tiles)
@@ -108,6 +111,7 @@ class Code_replacer:
         codegen_dict["NUM_IC"] = in_channel
         codegen_dict["NUM_OC"] = num_filter
         codegen_dict["PADDING"] = padding
+        codegen_dict["REORDER"] = ko_kh_reorder
 
         return codegen_dict
 
@@ -134,6 +138,7 @@ class Code_replacer:
         NUM_IC = self.codegen_dict["NUM_IC"] 
         NUM_OC = self.codegen_dict["NUM_OC"] 
         PADDING = self.codegen_dict["PADDING"] 
+        REORDER = self.codegen_dict["REORDER"] 
         PACK_RATE = 8
 
         manual_correctness_check = False
@@ -193,7 +198,7 @@ class Code_replacer:
         axis_size = {"kh": KERNEL_SIZE, "kw": KERNEL_SIZE, "ic_outer": IC_OUTER, "ic_inner": IC_INNER}
 
         vectorized_load = True
-        ko_kh_reorder = True
+        ko_kh_reorder = REORDER
         #kw_ki_reorder = False
         if ko_kh_reorder:
             axis_order[0], axis_order[1] = axis_order[1], axis_order[0]
