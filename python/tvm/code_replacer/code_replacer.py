@@ -199,7 +199,7 @@ class Code_replacer:
 
         vectorized_load = True
         ko_kh_reorder = REORDER
-        register_level_packing = False
+        register_level_packing = True
         #kw_ki_reorder = False
         if ko_kh_reorder:
             axis_order[0], axis_order[1] = axis_order[1], axis_order[0]
