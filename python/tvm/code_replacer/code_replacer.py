@@ -871,7 +871,7 @@ class Code_replacer:
         # print("")
 
         cfg_config = cfg_data[2]
-        knobs = ['block_row_warps', 'block_col_warps', 'warp_row_tiles', 'warp_col_tiles', 'chunk'] 
+        knobs = ['block_row_warps', 'block_col_warps', 'warp_row_tiles', 'warp_col_tiles', 'chunk', 'reorder_inner'] 
         knob_list = [knob for knob in knobs]
         value_list = [cfg_config[knob].val for knob in knobs]
         self.schedule_dict = dict(zip(knob_list, value_list))
