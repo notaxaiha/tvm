@@ -33,6 +33,7 @@
 #include <vector>
 #include <fstream>
 #include <iostream>
+#include <unistd.h>
 
 #include "../file_utils.h"
 #include "../meta_data.h"
@@ -171,45 +172,76 @@ class CUDAWrappedFunc {
     }
     CUstream strm = static_cast<CUstream>(CUDAThreadEntry::ThreadLocal()->stream);
     ThreadWorkLoad wl = launch_param_config_.Extract(args);
-
-    // Get binding info from /tmp/index.txt
-    size_t dims[6] = {};
-    std::string line;
-    std::ifstream file("/tmp/index.txt");
-    if(file.is_open()){
-	    for(int i=0; i<6; i++){
-		    file >> dims[i];
-	    }
-    }
-    file.close();
-
-    CUresult result = cuLaunchKernel(fcache_[device_id], dims[0], dims[1],
-                                     dims[2], dims[3], dims[4],
-                                     dims[5], wl.dyn_shmem_size, strm, void_args, nullptr);
-
-    /*
-    CUresult result = cuLaunchKernel(fcache_[device_id], wl.grid_dim(0), wl.grid_dim(1),
-                                     wl.grid_dim(2), wl.block_dim(0), wl.block_dim(1),
-                                     wl.block_dim(2), wl.dyn_shmem_size, strm, void_args, nullptr);
-    */
-
-    if (result != CUDA_SUCCESS && result != CUDA_ERROR_DEINITIALIZED) {
-      const char* msg;
-      cuGetErrorName(result, &msg);
-      std::ostringstream os;
-      os << "CUDALaunch Error: " << msg << "\n"
-         << " grid=(" << wl.grid_dim(0) << "," << wl.grid_dim(1) << "," << wl.grid_dim(2) << "), "
-         << " block=(" << wl.block_dim(0) << "," << wl.block_dim(1) << "," << wl.block_dim(2)
-         << ")\n";
-      std::string cuda = m_->GetSource("");
-      if (cuda.length() != 0) {
-        os << "// func_name=" << func_name_ << "\n"
-           << "// CUDA Source\n"
-           << "// -----------\n"
-           << cuda;
+    
+    const char* file = "/tmp/index.txt";
+    if((access(file, 0) != -1))
+    {
+      // Get binding info from /tmp/index.txt
+      size_t dims[6] = {};
+      std::string line;
+      std::ifstream file("/tmp/index.txt");
+      if(file.is_open()){
+	      for(int i=0; i<6; i++){
+		      file >> dims[i];
+	      }
       }
-      LOG(FATAL) << os.str();
+      file.close();
+      /*
+      std::cout<<"Custom kernel launch\n";
+      std::cout << "CUDALaunch " <<"\n"
+           << " grid=(" << dims[0] << "," << dims[1] << "," << dims[2] << "), "
+           << " block=(" << dims[3] << "," << dims[4] << "," << dims[5]
+           << ")\n";
+      */
+      CUresult result = cuLaunchKernel(fcache_[device_id], dims[0], dims[1],
+                                       dims[2], dims[3], dims[4],
+                                       dims[5], wl.dyn_shmem_size, strm, void_args, nullptr);
+      if (result != CUDA_SUCCESS && result != CUDA_ERROR_DEINITIALIZED) {
+        const char* msg;
+        cuGetErrorName(result, &msg);
+        std::ostringstream os;
+        os << "CUDALaunch Error: " << msg << "\n"
+           << " grid=(" << wl.grid_dim(0) << "," << wl.grid_dim(1) << "," << wl.grid_dim(2) << "), "
+           << " block=(" << wl.block_dim(0) << "," << wl.block_dim(1) << "," << wl.block_dim(2)
+           << ")\n";
+        std::string cuda = m_->GetSource("");
+        if (cuda.length() != 0) {
+          os << "// func_name=" << func_name_ << "\n"
+             << "// CUDA Source\n"
+             << "// -----------\n"
+             << cuda;
+        }
+        LOG(FATAL) << os.str();
+      }
     }
+
+    else
+    {
+      // std::cout<<"TVM kernel launch\n";
+      CUresult result = cuLaunchKernel(fcache_[device_id], wl.grid_dim(0), wl.grid_dim(1),
+                                       wl.grid_dim(2), wl.block_dim(0), wl.block_dim(1),
+                                       wl.block_dim(2), wl.dyn_shmem_size, strm, void_args, nullptr);
+
+      if (result != CUDA_SUCCESS && result != CUDA_ERROR_DEINITIALIZED) {
+        const char* msg;
+        cuGetErrorName(result, &msg);
+        std::ostringstream os;
+        os << "CUDALaunch Error: " << msg << "\n"
+           << " grid=(" << wl.grid_dim(0) << "," << wl.grid_dim(1) << "," << wl.grid_dim(2) << "), "
+           << " block=(" << wl.block_dim(0) << "," << wl.block_dim(1) << "," << wl.block_dim(2)
+           << ")\n";
+        std::string cuda = m_->GetSource("");
+        if (cuda.length() != 0) {
+          os << "// func_name=" << func_name_ << "\n"
+             << "// CUDA Source\n"
+             << "// -----------\n"
+             << cuda;
+        }
+        LOG(FATAL) << os.str();
+      }
+    }
+    
+
   }
 
  private:

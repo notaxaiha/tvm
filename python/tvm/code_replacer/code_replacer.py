@@ -1,7 +1,7 @@
 import json
 import numpy
 import pdb
-
+import os
 
 class Code_replacer:
     enabled = False
@@ -12,6 +12,7 @@ class Code_replacer:
         self.schedule_dict = dict()
         self.codegen_dict = dict()
         self.dump_count = 0
+        self.tune = False
         self.code = None
         self.dumpcode = None
 
@@ -62,14 +63,17 @@ class Code_replacer:
         block_col_warps = block_col_warps_stable
         chunk = chunk_stable
 
-        print("============== Binding Info ===============")
-        print("BlockIdx.x : ", row_blocks)
-        print("BlockIdx.y : ", col_blocks)
-        print("BlockIdx.z : ", 1)
-        print("ThreadIdx.x : ", 32)
-        print("ThreadIdx.y : ", block_row_warps)
-        print("ThreadIdx.z : ", block_col_warps)
-        print("===========================================")
+        codegen_dict = dict()
+
+        if not self.tune:
+            print("============== Binding Info ===============")
+            print("BlockIdx.x : ", row_blocks)
+            print("BlockIdx.y : ", col_blocks)
+            print("BlockIdx.z : ", 1)
+            print("ThreadIdx.x : ", 32)
+            print("ThreadIdx.y : ", block_row_warps)
+            print("ThreadIdx.z : ", block_col_warps)
+            print("===========================================")
 
         f = open("/tmp/index.txt", 'w')
         f.write("%d\n" %row_blocks)
@@ -79,8 +83,6 @@ class Code_replacer:
         f.write("%d\n" %block_row_warps)
         f.write("%d\n" %block_col_warps)
         f.close()
-
-        codegen_dict = dict()
 
         if((in_width * batch) % (block_row_warps * warp_row_tiles * self.wmma_m) != 0):
             codegen_dict["Fallback"] = True
@@ -667,13 +669,16 @@ class Code_replacer:
 
         self.codegen_dict = self.generate_codegen_dict()
         if "Fallback" in self.codegen_dict:
+            print("*********** Fallback ************")
+            os.remove("/tmp/index.txt")
             self.dumpcode = "Fallback due to invalid tuning log"
             self.code += "//Code generation failure. Fallback to default TVM code generation\n"
             return self.code
-
-        print("====codegen_dict====")
-        print(self.codegen_dict)
-        print("")
+        
+        if not self.tune:
+            print("====codegen_dict====")
+            print(self.codegen_dict)
+            print("")
 
         for line in in_code.splitlines():
             if "__launch_bounds__" in line:
@@ -683,6 +688,8 @@ class Code_replacer:
 
         result_code = self.codegen(kernel_intro)
         if result_code == "Fallback":
+            print("*********** Fallback ************")
+            os.remove("/tmp/index.txt")
             self.dumpcode = "Fallback due to invalid codegen parameters"
             self.code += "//Code generation failure. Fallback to default TVM code generation\n"
             return self.code
@@ -733,15 +740,46 @@ class Code_replacer:
 
             return self.code_replace()
 
-    def code_replace_with_TVM_config(self, code):
+    def code_replace_with_TVM_config(self, code, cfg_data):
+        
+        self.tune = True
         self.code = code
         self.code += "//configcall\n"
-        print("====compute_dict====")
-        print(self.compute_dict)
-        print("")
-        
-        
-        print("====schedule_dict====")
-        print(self.schedule_dict)
-        print("")
+
+        print("##############################################")
+        print("########## Code Replace from Config ##########")
+        print("##############################################")
+        # print("====cfg_data====")
+        # print(cfg_data)
+        # print("")
+
+        # log_input = log_data["input"]
+        tensor_shapes = cfg_data[1].workload
+
+        featuremap_shape = tensor_shapes[1][1]
+        self.compute_dict["in_height"] = featuremap_shape[0]
+        self.compute_dict["in_width"] = featuremap_shape[1]
+        self.compute_dict["batch"] = featuremap_shape[2]
+        self.compute_dict["in_channel"] = featuremap_shape[3]
+
+        conv_kernel_shape = tensor_shapes[2][1]
+        self.compute_dict["kernel"] = conv_kernel_shape[0]
+        self.compute_dict["num_filter"] = conv_kernel_shape[2]
+
+        self.compute_dict["stride"] = tensor_shapes[3]
+        self.compute_dict["padding"] = tensor_shapes[4]
+        self.compute_dict["dilation"] = tensor_shapes[5]
+        # print("====compute_dict====")
+        # print(self.compute_dict)
+        # print("")
+
+        cfg_config = cfg_data[2]
+        knobs = ['block_row_warps', 'block_col_warps', 'warp_row_tiles', 'warp_col_tiles', 'chunk'] 
+        knob_list = [knob for knob in knobs]
+        value_list = [cfg_config[knob].val for knob in knobs]
+        self.schedule_dict = dict(zip(knob_list, value_list))
+        # print("====schedule_dict====")
+        # print(self.schedule_dict)
+        # print("")
+
         return self.code_replace()
