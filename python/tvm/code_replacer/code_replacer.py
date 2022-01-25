@@ -42,6 +42,9 @@ class Code_replacer:
         warp_col_tiles = self.schedule_dict["warp_col_tiles"]
         chunk = self.schedule_dict["chunk"]
 
+        reorder_inner = self.schedule_dict["reorder_inner"]
+        ko_kh_reorder = True if reorder_inner == [1,0] else False
+
 
         row_tiles = batch * in_height * in_width // self.wmma_m
         warp_row_tiles_stable = min(warp_row_tiles, row_tiles)
@@ -110,6 +113,7 @@ class Code_replacer:
         codegen_dict["NUM_IC"] = in_channel
         codegen_dict["NUM_OC"] = num_filter
         codegen_dict["PADDING"] = padding
+        codegen_dict["REORDER"] = ko_kh_reorder
 
         return codegen_dict
 
@@ -136,6 +140,7 @@ class Code_replacer:
         NUM_IC = self.codegen_dict["NUM_IC"] 
         NUM_OC = self.codegen_dict["NUM_OC"] 
         PADDING = self.codegen_dict["PADDING"] 
+        REORDER = self.codegen_dict["REORDER"] 
         PACK_RATE = 8
 
         manual_correctness_check = False
@@ -194,7 +199,9 @@ class Code_replacer:
         axis_order = ["ic_outer","kh","ic_inner","kw", "tile"]
         axis_size = {"kh": KERNEL_SIZE, "kw": KERNEL_SIZE, "ic_outer": IC_OUTER, "ic_inner": IC_INNER}
 
-        ko_kh_reorder = True
+        vectorized_load = True
+        ko_kh_reorder = REORDER
+        register_level_packing = True
         #kw_ki_reorder = False
         if ko_kh_reorder:
             axis_order[0], axis_order[1] = axis_order[1], axis_order[0]
@@ -247,7 +254,10 @@ class Code_replacer:
         featuremap_shared_size = int(featuremap_shared_size)
 
         featuremap_fragments = (M_WARP * K_WARP) // (self.wmma_m * self.wmma_k * IC_OUTER)
-        kernel_shared_size = max((K_TB * N_TB) // (PACK_RATE * IC_OUTER), (M_TB * N_TB) // PACK_RATE)
+        if register_level_packing:
+            kernel_shared_size = max((K_TB * N_TB) // (PACK_RATE * IC_OUTER), (M_TB * N_TB) // PACK_RATE)
+        else:
+            kernel_shared_size = max((K_TB * N_TB) // (PACK_RATE * IC_OUTER), (M_TB * N_TB))
         kernel_fragments = (K_WARP * N_WARP) // (self.wmma_k * self.wmma_n * IC_OUTER)
 
         warp_size = 32
@@ -286,19 +296,22 @@ class Code_replacer:
         #block_col_warps, block_row_warps, warp_size
 
         if compute_at["featuremap_shared"] == first_axis_name:
-            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {FEATUREMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string = f"int featuremap_global_base = (outfeature_row * {FEATUREMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
-            global_base_addr_string += f" + {first_axis_name} * {first_axis_base};"
+            global_base_addr_string += f" + {first_axis_name} * {first_axis_base})"
+            if vectorized_load:
+                global_base_addr_string += f"/4"
+            global_base_addr_string += f";"
             add_codeline(result_codelist, global_base_addr_string, 2)
             
-            
-            ###############TODO:vectorized load###################
-            #featuremap_shared_size_vectorized = featuremap_shared_size
-            #load_iter = featuremap_shared_size_vectorized // whole_block_load_size
-            ######################################################
 
-            load_iter = -(featuremap_shared_size // -whole_block_load_size)
+            if vectorized_load:          
+                featuremap_shared_size_vectorized = featuremap_shared_size//4
+                load_iter = -(featuremap_shared_size_vectorized // -whole_block_load_size)
+            else:
+                load_iter = -(featuremap_shared_size // -whole_block_load_size)
+
             add_codeline(result_codelist, "#pragma unroll", 2)
             add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{", 2)
             add_codeline(result_codelist, f"int addressing_space = load_iter * {block_col_warps} * {block_row_warps} * {warp_size} + threadIdx.z * {block_row_warps} * {warp_size} + threadIdx.y * {warp_size} + threadIdx.x;", 3)
@@ -308,6 +321,8 @@ class Code_replacer:
             denominator = 1
             for dimension_name in dimension_names_shared:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
+                if vectorized_load and dimension_name == "tile":
+                    dimension_size //= 4
                 add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 3)
                 denominator *= dimension_size
             add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 3)
@@ -319,6 +334,8 @@ class Code_replacer:
             dst_addr_line = f"int dst_addr = {dimension_name}_dimension * {dimension_base}"
             for dimension_name in dimension_names_shared[1:]:
                 dimension_base = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+                if vectorized_load and dimension_name != "tile":
+                    dimension_base //= 4
                 dst_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             dst_addr_line += ";"
             add_codeline(result_codelist, dst_addr_line, 3)
@@ -331,19 +348,26 @@ class Code_replacer:
                 # current load scope is on featuremap_shared
                 if dimension_name in scope["featuremap_shared"]:
                     dimension_base = get_dimension_base(memory_layout["featuremap_global"], dimension_name)
+                    if vectorized_load and dimension_name != "tile":
+                        dimension_base //= 4
                     src_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             src_addr_line += f" - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC}"
+            if vectorized_load:
+                src_addr_line += " / 4"
             src_addr_line += ";"
             add_codeline(result_codelist, src_addr_line, 3)
 
-            #####################int pointer for correctness check###################
             if ko_kh_reorder:
                 kh_axis_name = "kh"
             else:
                 kh_axis_name = "kh_dimension"
             add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + {kh_axis_name})) && ((outfeature_row + {kh_axis_name}) < {PADDING} + {FEATUREMAP_HEIGHT});",3)
             add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} + {FEATUREMAP_WIDTH});",3)
-            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? ((int*){input_featuremap_name})[src_addr] : 0;", 3)
+            if vectorized_load:
+                add_codeline(result_codelist, f"int4 zeros = {{0,0,0,0}};",3)
+                add_codeline(result_codelist, f"((int4*)featuremap_shared)[dst_addr] = (inside_gmem_bound) ? ((int4*){input_featuremap_name})[src_addr] : zeros;", 3)
+            else:
+                add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? ((int*){input_featuremap_name})[src_addr] : 0;", 3)
             add_codeline(result_codelist, f"}}",2)
             add_codeline(result_codelist, f"__syncthreads();",2)
 
@@ -360,24 +384,27 @@ class Code_replacer:
         add_codeline(result_codelist, f"for (int {second_axis_name} = 0; {second_axis_name} < {second_axis_size}; {second_axis_name}++) {{", 2)
 
         if compute_at["featuremap_shared"] == second_axis_name:
-            global_base_addr_string = f"int featuremap_global_base = outfeature_row * {FEATURMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string = f"int featuremap_global_base = (outfeature_row * {FEATURMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
 
             first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
             global_base_addr_string += f" + {first_axis_name} * {first_axis_base}"
 
             second_axis_base = get_dimension_base(memory_layout["featuremap_global"], second_axis_name)
-            global_base_addr_string += f" + {second_axis_name} * {second_axis_base};"
+            global_base_addr_string += f" + {second_axis_name} * {second_axis_base})"
+            if vectorized_load:
+                global_base_addr_string += "/4"
+            global_base_addr_string += ";"
 
             add_codeline(result_codelist, global_base_addr_string, 3)
 
 
-            ###############TODO:vectorized load###################
-            #featuremap_shared_size_vectorized = featuremap_shared_size
-            #load_iter = featuremap_shared_size_vectorized // whole_block_load_size
-            ######################################################
+            if vectorized_load:
+                featuremap_shared_size_vectorized = featuremap_shared_size//4
+                load_iter = -(featuremap_shared_size_vectorized // -whole_block_load_size)
+            else:
+                load_iter = -(featuremap_shared_size // -whole_block_load_size)
 
-            load_iter = -(featuremap_shared_size // -whole_block_load_size)
             add_codeline(result_codelist, "#pragma unroll",3)
             add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{", 3)
             add_codeline(result_codelist, f"int addressing_space = load_iter * {block_col_warps} * {block_row_warps} * {warp_size} + threadIdx.z * {block_row_warps} * {warp_size} + threadIdx.y * {warp_size} + threadIdx.x;" , 4)
@@ -387,6 +414,8 @@ class Code_replacer:
             denominator = 1
             for dimension_name in dimension_names_shared:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
+                if vectorized_load and dimension_name == "tile":
+                    dimension_size //= 4
                 add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 4)
                 denominator *= dimension_size
             add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 4)
@@ -398,6 +427,8 @@ class Code_replacer:
             dst_addr_line = f"int dst_addr = {dimension_name}_dimension * {dimension_base}"
             for dimension_name in dimension_names_shared[1:]:
                 dimension_base = get_dimension_base(memory_layout["featuremap_shared"], dimension_name)
+                if vectorized_load and dimension_name != "tile":
+                    dimension_base //= 4
                 dst_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             dst_addr_line += ";"
             add_codeline(result_codelist, dst_addr_line, 4)
@@ -410,14 +441,22 @@ class Code_replacer:
                 #current load space is on featuremap_shared
                 if dimension_name in scope["featuremap_shared"]:
                     dimension_base = get_dimension_base(memory_layout["featuremap_global"], dimension_name)
+                    if vectorized_load and dimension_name != "tile":
+                        dimension_base //= 4
                     src_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             src_addr_line += f" - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC}"
+            if vectorized_load:
+                src_addr_lie += " / 4"
             src_addr_line += ";"
             add_codeline(result_codelist, src_addr_line,4)
 
             add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + kh)) && ((outfeature_row + kh) < {PADDING} * {FEATUREMAP_HEIGHT});", 4)
             add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} * {FEATUREMAP_WIDTH});", 4)
-            add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? (int*){input_featuremap_name}[src_addr] : 0;", 4)
+            if vectorized_load:
+                add_codeline(result_codelist, f"int4 zeros = {{0,0,0,0}};", 3)
+                add_codeline(result_codelist, f"((int4*)featuremap_shared)[dst_addr] = (inside_gmem_bound) ? ((int4*){input_featuremap_name})[src_addr] : zeros;", 4)
+            else:
+                add_codeline(result_codelist, f"featuremap_shared[dst_addr] = (inside_gmem_bound) ? ((int*){input_featuremap_name})[src_addr] : 0;", 4)
             add_codeline(result_codelist, f"}}", 3)
             add_codeline(result_codelist, f"__syncthreads();", 3)
 
@@ -511,21 +550,32 @@ class Code_replacer:
 
         #should find where ic_outer is on memory space
         #weight layout = HWOIoi, H_W_{O_blocks}_{O_warps}_{O_tiles}_{IC_OUTER}_{IC_INNER}_{wmma_n}_{wmma_k}
+        #global: h * w * col_blocks * block_col_warps * warp_col_tiles * IC_OUTER * IC_INNER * wmma.n * wmma.k
+        #shared: block_col_warps * warp_col_tiles * IC_INNER * wmma.n * wmma.k
         ########ic_outer is base addr
         global_kh_dimension_size = KERNEL_SIZE * NUM_OC * NUM_IC // PACK_RATE
         global_kw_dimension_size = NUM_OC * NUM_IC // PACK_RATE
         global_oc_block_size = N_TB * NUM_IC // PACK_RATE
         global_ic_outer_size = IC_INNER * self.wmma_n * self.wmma_k // PACK_RATE
 
-        add_codeline(result_codelist, f"int kernel_global_base = (kh * {global_kh_dimension_size}) + (kw * {global_kw_dimension_size}) + (blockIdx.y * {global_oc_block_size}) + (ic_outer * {global_ic_outer_size});",4)
+        if vectorized_load:
+            add_codeline(result_codelist, f"int kernel_global_base = ((kh * {global_kh_dimension_size}) + (kw * {global_kw_dimension_size}) + (blockIdx.y * {global_oc_block_size}) + (ic_outer * {global_ic_outer_size})) / 4;",4)
+        else:
+            add_codeline(result_codelist, f"int kernel_global_base = (kh * {global_kh_dimension_size}) + (kw * {global_kw_dimension_size}) + (blockIdx.y * {global_oc_block_size}) + (ic_outer * {global_ic_outer_size});",4)
 
-        load_iter = -(kernel_shared_size // -whole_block_load_size)
+        if vectorized_load:
+            kernel_shared_size_vectorized = kernel_shared_size // 4
+            load_iter = -(kernel_shared_size_vectorized // -whole_block_load_size)
+        else:
+            load_iter = -(kernel_shared_size // -whole_block_load_size)
         add_codeline(result_codelist, f"#pragma unroll",4)
         add_codeline(result_codelist, f"for (int load_iter = 0; load_iter < {load_iter}; load_iter++) {{",4)
         add_codeline(result_codelist, f"int addressing_space = load_iter * {block_col_warps} * {block_row_warps} * {warp_size} + threadIdx.z * {block_row_warps} * {warp_size} + threadIdx.y * {warp_size} + threadIdx.x;",5)
 
         denominator = 1
         tile_size = self.wmma_n * self.wmma_k // PACK_RATE
+        if vectorized_load:
+            tile_size //= 4
         add_codeline(result_codelist, f"int tile_dimension = (addressing_space / {denominator}) % {tile_size};",5)
 
         denominator *= tile_size
@@ -542,7 +592,10 @@ class Code_replacer:
         add_codeline(result_codelist, f"break;", 6)
         add_codeline(result_codelist, f"int kernel_dst_addr = tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {ic_inner_size} * {tile_size};", 5)
         add_codeline(result_codelist, f"int kernel_src_addr = kernel_global_base + tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {IC_OUTER} * {IC_INNER} * {tile_size};", 5)
-        add_codeline(result_codelist, f"kernel_shared[kernel_dst_addr] = ((int*){input_kernel_name})[kernel_src_addr];", 5)
+        if vectorized_load:
+            add_codeline(result_codelist, f"((int4*)kernel_shared)[kernel_dst_addr] = ((int4*){input_kernel_name})[kernel_src_addr];", 5)
+        else:
+            add_codeline(result_codelist, f"kernel_shared[kernel_dst_addr] = ((int*){input_kernel_name})[kernel_src_addr];", 5)
         add_codeline(result_codelist, f"}}",4)
         add_codeline(result_codelist, f"__syncthreads();",4)
 
@@ -587,73 +640,117 @@ class Code_replacer:
         add_codeline(result_codelist, f"__syncthreads();",1)
 
 
-        ################################################
-        ################################################
-        ##### Conduct fragment level data packing ######
-        ################################################
-        ################################################
-        #each warp should cover at least four fragment tiles on output channel level for warp-level register packing
-        warp_register_count = 32
-        packed_tile_register_count = self.wmma_m * self.wmma_n // PACK_RATE
 
-        tiles_for_packing = warp_register_count // packed_tile_register_count
+        if register_level_packing:
+            ################################################
+            ################################################
+            ##### Conduct fragment level data packing ######
+            ################################################
+            ################################################
+            #each warp should cover at least four fragment tiles on output channel level for warp-level register packing
+            warp_register_count = 32
+            packed_tile_register_count = self.wmma_m * self.wmma_n // PACK_RATE
 
-        if not (warp_col_tiles % tiles_for_packing == 0):
-            return "Fallback"
-        packing_iter = warp_col_tiles // tiles_for_packing
+            tiles_for_packing = warp_register_count // packed_tile_register_count
 
-        add_codeline(result_codelist, f"#pragma unroll",1)
-        add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",1)
-        add_codeline(result_codelist, f"#pragma unroll",2)
-        add_codeline(result_codelist, f"for (int packing_iter = 0; packing_iter < {packing_iter}; packing_iter++) {{",2)
-        add_codeline(result_codelist, f"int fully_packed = 0;",3)
-        add_codeline(result_codelist, f"#pragma unroll",3)
-        add_codeline(result_codelist, f"for (int output_tile_iter = 0; output_tile_iter < {tiles_for_packing}; output_tile_iter++) {{",3)
-        add_codeline(result_codelist, f"int partial_packed = 0;",4)
-        add_codeline(result_codelist, f"int temp;",4)
-        add_codeline(result_codelist, f"#pragma unroll",4)
-        add_codeline(result_codelist, f"for (int elem_iter = 0; elem_iter < Conv_wmma_accumulator[0].num_elements; elem_iter++) {{",4)
-        add_codeline(result_codelist, f"partial_packed <<= 4;", 5)
-        add_codeline(result_codelist, f"int outval = Conv_wmma_accumulator[row_iter * {warp_col_tiles} + packing_iter * {tiles_for_packing} + output_tile_iter].x[elem_iter];", 5)
-        #add_codeline(result_codelist, f"outval += ((int*)bias)[2*threadIdx.x + elem_iter];", 5)
-        if manual_correctness_check:
-            #this line is required for correctness check 
-            add_codeline(result_codelist, f"outval = min(((max(outval, 0) << (long)4) * (long)1241513984 + (long)1073741824) >> (long)31, 15);", 5)
-        add_codeline(result_codelist, f"outval &= 0xf;", 5)
-        add_codeline(result_codelist, f"partial_packed |= outval;", 5)
-        add_codeline(result_codelist, f"}}",4)
-        add_codeline(result_codelist, f"partial_packed <<= 24;",4)
-        add_codeline(result_codelist, f"temp = warpReducePack(partial_packed);",4)
-        add_codeline(result_codelist, f"temp = __shfl_up_sync(0xffffffff, temp, output_tile_iter);",4)
-        add_codeline(result_codelist, f"if(threadIdx.x == 0 && output_tile_iter > 0)",4)
-        add_codeline(result_codelist, f"temp = 0;",5)
-        add_codeline(result_codelist, f"fully_packed |= temp;",4)
-        add_codeline(result_codelist, f"}}",3)
-        #this shared memory address tends to shift due to data layout change
-        add_codeline(result_codelist, f"kernel_shared[(threadIdx.y * {warp_row_tiles} * {block_col_warps} * {packing_iter} * 32) + (row_iter * {block_col_warps} * {packing_iter} * 32) + (threadIdx.z * {packing_iter} * 32) + (packing_iter * 32) + threadIdx.x] = fully_packed;",3)
-        add_codeline(result_codelist, f"__syncthreads();",3)
-        add_codeline(result_codelist, f"}}",2)
-        add_codeline(result_codelist, f"__syncthreads();",2)
-        add_codeline(result_codelist, f"}}",1)
+            if not (warp_col_tiles % tiles_for_packing == 0):
+                return "Fallback"
+            packing_iter = warp_col_tiles // tiles_for_packing
+
+            add_codeline(result_codelist, f"#pragma unroll",1)
+            add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",1)
+            add_codeline(result_codelist, f"#pragma unroll",2)
+            add_codeline(result_codelist, f"for (int packing_iter = 0; packing_iter < {packing_iter}; packing_iter++) {{",2)
+            add_codeline(result_codelist, f"int fully_packed = 0;",3)
+            add_codeline(result_codelist, f"#pragma unroll",3)
+            add_codeline(result_codelist, f"for (int output_tile_iter = 0; output_tile_iter < {tiles_for_packing}; output_tile_iter++) {{",3)
+            add_codeline(result_codelist, f"int partial_packed = 0;",4)
+            add_codeline(result_codelist, f"int temp;",4)
+            add_codeline(result_codelist, f"#pragma unroll",4)
+            add_codeline(result_codelist, f"for (int elem_iter = 0; elem_iter < Conv_wmma_accumulator[0].num_elements; elem_iter++) {{",4)
+            add_codeline(result_codelist, f"partial_packed <<= 4;", 5)
+            add_codeline(result_codelist, f"int outval = Conv_wmma_accumulator[row_iter * {warp_col_tiles} + packing_iter * {tiles_for_packing} + output_tile_iter].x[elem_iter];", 5)
+            #add_codeline(result_codelist, f"outval += ((int*)bias)[2*threadIdx.x + elem_iter];", 5)
+            if manual_correctness_check:
+                #this line is required for correctness check 
+                add_codeline(result_codelist, f"outval = min(((max(outval, 0) << (long)4) * (long)1241513984 + (long)1073741824) >> (long)31, 15);", 5)
+            add_codeline(result_codelist, f"outval &= 0xf;", 5)
+            add_codeline(result_codelist, f"partial_packed |= outval;", 5)
+            add_codeline(result_codelist, f"}}",4)
+            add_codeline(result_codelist, f"partial_packed <<= 24;",4)
+            add_codeline(result_codelist, f"temp = warpReducePack(partial_packed);",4)
+            add_codeline(result_codelist, f"temp = __shfl_up_sync(0xffffffff, temp, output_tile_iter);",4)
+            add_codeline(result_codelist, f"if(threadIdx.x == 0 && output_tile_iter > 0)",4)
+            add_codeline(result_codelist, f"temp = 0;",5)
+            add_codeline(result_codelist, f"fully_packed |= temp;",4)
+            add_codeline(result_codelist, f"}}",3)
+            #this shared memory address tends to shift due to data layout change
+            add_codeline(result_codelist, f"kernel_shared[(threadIdx.y * {warp_row_tiles} * {block_col_warps} * {packing_iter} * 32) + (row_iter * {block_col_warps} * {packing_iter} * 32) + (threadIdx.z * {packing_iter} * 32) + (packing_iter * 32) + threadIdx.x] = fully_packed;",3)
+            add_codeline(result_codelist, f"__syncthreads();",3)
+            add_codeline(result_codelist, f"}}",2)
+            add_codeline(result_codelist, f"__syncthreads();",2)
+            add_codeline(result_codelist, f"}}",1)
 
 
 
-        add_codeline(result_codelist, f"#pragma unroll",1)
-        add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",1)
-        add_codeline(result_codelist, f"#pragma unroll",2)
-        #packing iter iterates over output channel
-        channel_iter = packing_iter
-        add_codeline(result_codelist, f"for (int channel_iter = 0; channel_iter < {channel_iter}; channel_iter++) {{",2)
-        add_codeline(result_codelist, f"int global_output_dst = (blockIdx.x * {block_row_warps} * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",3)
-        add_codeline(result_codelist, f"+ (threadIdx.y * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
-        add_codeline(result_codelist, f"+ (row_iter * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
-        add_codeline(result_codelist, f"+ (blockIdx.y * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
-        add_codeline(result_codelist, f"int local_output_src = (threadIdx.y * {warp_row_tiles} * {block_col_warps} * {channel_iter} * 32)",3)
-        add_codeline(result_codelist, f"+ (row_iter * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
-        add_codeline(result_codelist, f"((int*){output_featuremap_name})[global_output_dst] = kernel_shared[local_output_src];", 3)
-        
-        add_codeline(result_codelist, f"}}", 2)
-        add_codeline(result_codelist, f"}}", 1)
+            add_codeline(result_codelist, f"#pragma unroll",1)
+            add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",1)
+            add_codeline(result_codelist, f"#pragma unroll",2)
+            #packing iter iterates over output channel
+            channel_iter = packing_iter
+            add_codeline(result_codelist, f"for (int channel_iter = 0; channel_iter < {channel_iter}; channel_iter++) {{",2)
+            add_codeline(result_codelist, f"int global_output_dst = (blockIdx.x * {block_row_warps} * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",3)
+            add_codeline(result_codelist, f"+ (threadIdx.y * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
+            add_codeline(result_codelist, f"+ (row_iter * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
+            add_codeline(result_codelist, f"+ (blockIdx.y * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
+            add_codeline(result_codelist, f"int local_output_src = (threadIdx.y * {warp_row_tiles} * {block_col_warps} * {channel_iter} * 32)",3)
+            add_codeline(result_codelist, f"+ (row_iter * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
+            add_codeline(result_codelist, f"((int*){output_featuremap_name})[global_output_dst] = kernel_shared[local_output_src];", 3)
+            
+            add_codeline(result_codelist, f"}}", 2)
+            add_codeline(result_codelist, f"}}", 1)
+
+
+        else: #implementaion without packing
+            if not (warp_col_tiles % 4 == 0):
+                return "Fallback"
+            unpacked_tile_size = self.wmma_m * self.wmma_n
+            add_codeline(result_codelist, f"#pragma unroll",1)
+            add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{",1)
+            add_codeline(result_codelist, f"#pragma unroll",2)
+            add_codeline(result_codelist, f"for (int oc_tile = 0; oc_tile < {warp_col_tiles}; oc_tile++) {{",2)
+            kernel_dst_addr = f"(int*)kernel_shared + (threadIdx.y * {warp_row_tiles}  * {block_col_warps} * {warp_col_tiles} * {unpacked_tile_size}) + (row_iter * {block_col_warps} * {warp_col_tiles} * {unpacked_tile_size}) + (threadIdx.z * {warp_col_tiles} * {unpacked_tile_size}) + (oc_tile * {unpacked_tile_size})"
+            add_codeline(result_codelist, f"(void)nvcuda::wmma::store_matrix_sync({kernel_dst_addr} , Conv_wmma_accumulator[row_iter * {warp_col_tiles} + oc_tile], {self.wmma_n}, nvcuda::wmma::mem_row_major);", 3)
+            add_codeline(result_codelist, f"}}",2)
+            add_codeline(result_codelist, f"}}",1)
+
+            add_codeline(result_codelist, f"#pragma unroll", 1)
+            add_codeline(result_codelist, f"for (int row_iter = 0; row_iter < {warp_row_tiles}; row_iter++) {{", 1)
+            channel_iter = warp_col_tiles // 4
+            add_codeline(result_codelist, f"#pragma unroll", 2)
+            add_codeline(result_codelist, f"for (int channel_iter = 0; channel_iter < {channel_iter}; channel_iter++) {{", 2)
+            add_codeline(result_codelist, f"int packing_dst = 0;", 3)
+            add_codeline(result_codelist, f"int local_output_src = (threadIdx.y * {warp_row_tiles} * {block_col_warps} * {channel_iter} * 32)",3)
+            add_codeline(result_codelist, f"+ (row_iter * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (threadIdx.x);",5)
+            add_codeline(result_codelist, f"local_output_src *= 8;",3)
+            add_codeline(result_codelist, f"#pragma unroll", 3)
+            add_codeline(result_codelist, f"for (int packing_iter = 0; packing_iter < 8; packing_iter++) {{", 3)
+            add_codeline(result_codelist, f"int outval = kernel_shared[local_output_src + packing_iter];", 4)
+            add_codeline(result_codelist, f"outval &= 0xf;", 4)
+            add_codeline(result_codelist, f"outval = outval << 4*(7-packing_iter);", 4)
+            add_codeline(result_codelist, f"packing_dst |= outval;", 4)
+            add_codeline(result_codelist, f"}}", 3)
+            add_codeline(result_codelist, f"int inner_batch_iter = threadIdx.x % 8;", 3)
+            add_codeline(result_codelist, f"int inner_channel_iter = threadIdx.x / 8;", 3)
+            add_codeline(result_codelist, f"int global_output_dst = (blockIdx.x * {block_row_warps} * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",3)
+            add_codeline(result_codelist, f"+ (threadIdx.y * {warp_row_tiles} * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
+            add_codeline(result_codelist, f"+ (row_iter * {grid_col_blocks} * {block_col_warps} * {channel_iter} * 32)",5)
+            add_codeline(result_codelist, f"+ (blockIdx.y * {block_col_warps} * {channel_iter} * 32) + (threadIdx.z * {channel_iter} * 32) + (channel_iter * 32) + (inner_batch_iter * 4) + (inner_channel_iter);",5)
+            add_codeline(result_codelist, f"((int*){output_featuremap_name})[global_output_dst] = packing_dst;", 3)
+            add_codeline(result_codelist, f"}}", 2)
+            add_codeline(result_codelist, f"}}", 1)
+
+
         add_codeline(result_codelist, f"}}", 0)
 
         add_codeline(result_codelist, kernel_intro[1], 0)
@@ -698,7 +795,7 @@ class Code_replacer:
         self.dumpcode = result_code
         
         return result_code
-        # return self.code
+        #return self.code
 
     def code_replace_with_log_file(self, code, log_path):
         self.code = code
