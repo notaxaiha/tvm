@@ -384,7 +384,7 @@ class Code_replacer:
         add_codeline(result_codelist, f"for (int {second_axis_name} = 0; {second_axis_name} < {second_axis_size}; {second_axis_name}++) {{", 2)
 
         if compute_at["featuremap_shared"] == second_axis_name:
-            global_base_addr_string = f"int featuremap_global_base = (outfeature_row * {FEATURMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
+            global_base_addr_string = f"int featuremap_global_base = (outfeature_row * {FEATUREMAP_WIDTH} * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
             global_base_addr_string += f" + outfeature_col * {IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE}"
 
             first_axis_base = get_dimension_base(memory_layout["featuremap_global"], first_axis_name)
@@ -446,7 +446,7 @@ class Code_replacer:
                     src_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             src_addr_line += f" - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC}"
             if vectorized_load:
-                src_addr_lie += " / 4"
+                src_addr_line += " / 4"
             src_addr_line += ";"
             add_codeline(result_codelist, src_addr_line,4)
 
@@ -871,9 +871,11 @@ class Code_replacer:
         # print("")
 
         cfg_config = cfg_data[2]
-        knobs = ['block_row_warps', 'block_col_warps', 'warp_row_tiles', 'warp_col_tiles', 'chunk', 'reorder_inner'] 
+        knobs = ['block_row_warps', 'block_col_warps', 'warp_row_tiles', 'warp_col_tiles', 'chunk'] 
         knob_list = [knob for knob in knobs]
         value_list = [cfg_config[knob].val for knob in knobs]
+        knob_list.append('reorder_inner')
+        value_list.append(cfg_config['reorder_inner'].perm)
         self.schedule_dict = dict(zip(knob_list, value_list))
         # print("====schedule_dict====")
         # print(self.schedule_dict)
