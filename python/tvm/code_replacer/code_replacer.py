@@ -199,7 +199,7 @@ class Code_replacer:
         axis_order = ["ic_outer","kh","ic_inner","kw", "tile"]
         axis_size = {"kh": KERNEL_SIZE, "kw": KERNEL_SIZE, "ic_outer": IC_OUTER, "ic_inner": IC_INNER}
 
-        vectorized_load = True
+        vectorized_load = True 
         ko_kh_reorder = REORDER
         register_level_packing = True
         #kw_ki_reorder = False
@@ -843,9 +843,7 @@ class Code_replacer:
         self.code = code
         self.code += "//configcall\n"
 
-        print("##############################################")
-        print("########## Code Replace from Config ##########")
-        print("##############################################")
+        print("********** Code Replace from Config **********")
         # print("====cfg_data====")
         # print(cfg_data)
         # print("")
