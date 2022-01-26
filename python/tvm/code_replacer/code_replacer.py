@@ -199,7 +199,7 @@ class Code_replacer:
         axis_order = ["ic_outer","kh","ic_inner","kw", "tile"]
         axis_size = {"kh": KERNEL_SIZE, "kw": KERNEL_SIZE, "ic_outer": IC_OUTER, "ic_inner": IC_INNER}
 
-        vectorized_load = True
+        vectorized_load = True 
         ko_kh_reorder = REORDER
         register_level_packing = True
         #kw_ki_reorder = False
@@ -461,7 +461,7 @@ class Code_replacer:
             src_addr_line += ";"
             #add_codeline(result_codelist, src_addr_line,4)
 
-            add_codeline(result_codelist, f"int dst_addr = adressing_space;", 3)
+            add_codeline(result_codelist, f"int dst_addr = addressing_space;", 3)
             if vectorized_load:
                 add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
             else:
@@ -866,9 +866,7 @@ class Code_replacer:
         self.code = code
         self.code += "//configcall\n"
 
-        print("##############################################")
-        print("########## Code Replace from Config ##########")
-        print("##############################################")
+        print("********** Code Replace from Config **********")
         # print("====cfg_data====")
         # print(cfg_data)
         # print("")

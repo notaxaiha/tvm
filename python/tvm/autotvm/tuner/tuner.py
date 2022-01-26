@@ -128,7 +128,6 @@ class Tuner(object):
                 break
 
             configs = self.next_batch(min(n_parallel, n_trial - i))
-
             inputs = [MeasureInput(self.task.target, self.task, config) for config in configs]
             results = measure_batch(inputs)
 
