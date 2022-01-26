@@ -327,7 +327,7 @@ class Code_replacer:
                 if dimension_name == "kw":
                     add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator});", 3)
                 denominator *= dimension_size
-            add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 3)
+            add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space >= {denominator};", 3)
             add_codeline(result_codelist, "if (out_of_shmem_bound)", 3)
             add_codeline(result_codelist, "break;", 4)
 
@@ -429,7 +429,7 @@ class Code_replacer:
                 if dimension_name == "kw":
                     add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator});", 4)
                 denominator *= dimension_size
-            add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 4)
+            add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space >= {denominator};", 4)
             add_codeline(result_codelist, "if (out_of_shmem_bound)", 4)
             add_codeline(result_codelist, "break;", 5)
 
@@ -608,7 +608,7 @@ class Code_replacer:
         add_codeline(result_codelist, f"int output_channel_dimension = (addressing_space / {denominator});",5)
 
         denominator *= output_channel_size
-        add_codeline(result_codelist, f"bool out_of_bound = addressing_space > {denominator};", 5)
+        add_codeline(result_codelist, f"bool out_of_bound = addressing_space >= {denominator};", 5)
         add_codeline(result_codelist, f"if (out_of_bound)", 5)
         add_codeline(result_codelist, f"break;", 6)
         #add_codeline(result_codelist, f"int kernel_dst_addr = tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {ic_inner_size} * {tile_size};", 5)
