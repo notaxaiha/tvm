@@ -461,7 +461,7 @@ class Code_replacer:
             src_addr_line += ";"
             #add_codeline(result_codelist, src_addr_line,4)
 
-            add_codeline(result_codelist, f"int dst_addr = adressing_space;", 3)
+            add_codeline(result_codelist, f"int dst_addr = addressing_space;", 3)
             if vectorized_load:
                 add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
             else:
