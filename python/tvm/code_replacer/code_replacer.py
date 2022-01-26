@@ -323,7 +323,9 @@ class Code_replacer:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
                 if vectorized_load and dimension_name == "tile":
                     dimension_size //= 4
-                add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 3)
+                #add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 3)
+                if dimension_name == "kw":
+                    add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator});", 3)
                 denominator *= dimension_size
             add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 3)
             add_codeline(result_codelist, "if (out_of_shmem_bound)", 3)
@@ -338,7 +340,7 @@ class Code_replacer:
                     dimension_base //= 4
                 dst_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             dst_addr_line += ";"
-            add_codeline(result_codelist, dst_addr_line, 3)
+            #add_codeline(result_codelist, dst_addr_line, 3)
 
 
             dimension_names_global = [dimension_name for (dimension_name, size) in memory_layout["featuremap_global"]]
@@ -355,7 +357,14 @@ class Code_replacer:
             if vectorized_load:
                 src_addr_line += " / 4"
             src_addr_line += ";"
-            add_codeline(result_codelist, src_addr_line, 3)
+            #add_codeline(result_codelist, src_addr_line, 3)
+
+            add_codeline(result_codelist, f"int dst_addr = addressing_space;", 3)
+            if vectorized_load:
+                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
+            else:
+                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC});", 3)
+
 
             if ko_kh_reorder:
                 kh_axis_name = "kh"
@@ -416,7 +425,9 @@ class Code_replacer:
                 dimension_size = get_dimension_size(memory_layout["featuremap_shared"], dimension_name)
                 if vectorized_load and dimension_name == "tile":
                     dimension_size //= 4
-                add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 4)
+                #add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 4)
+                if dimension_name == "kw":
+                    add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator});", 4)
                 denominator *= dimension_size
             add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space > {denominator};", 4)
             add_codeline(result_codelist, "if (out_of_shmem_bound)", 4)
@@ -431,7 +442,7 @@ class Code_replacer:
                     dimension_base //= 4
                 dst_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             dst_addr_line += ";"
-            add_codeline(result_codelist, dst_addr_line, 4)
+            #add_codeline(result_codelist, dst_addr_line, 4)
 
 
             dimension_names_global = [dimension_name for (dimension_name, size) in memory_layout["featuremap_global"]]
@@ -448,7 +459,13 @@ class Code_replacer:
             if vectorized_load:
                 src_addr_line += " / 4"
             src_addr_line += ";"
-            add_codeline(result_codelist, src_addr_line,4)
+            #add_codeline(result_codelist, src_addr_line,4)
+
+            add_codeline(result_codelist, f"int dst_addr = adressing_space;", 3)
+            if vectorized_load:
+                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
+            else:
+                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC});", 3)
 
             add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + kh)) && ((outfeature_row + kh) < {PADDING} * {FEATUREMAP_HEIGHT});", 4)
             add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} * {FEATUREMAP_WIDTH});", 4)
@@ -576,22 +593,28 @@ class Code_replacer:
         tile_size = self.wmma_n * self.wmma_k // PACK_RATE
         if vectorized_load:
             tile_size //= 4
-        add_codeline(result_codelist, f"int tile_dimension = (addressing_space / {denominator}) % {tile_size};",5)
+        #add_codeline(result_codelist, f"int tile_dimension = (addressing_space / {denominator}) % {tile_size};",5)
 
         denominator *= tile_size
         ic_inner_size = IC_INNER
-        add_codeline(result_codelist, f"int ic_inner_dimension = (addressing_space / {denominator}) % {ic_inner_size};",5)
+        #add_codeline(result_codelist, f"int ic_inner_dimension = (addressing_space / {denominator}) % {ic_inner_size};",5)
 
         denominator *= ic_inner_size
+        add_codeline(result_codelist, f"int ic_dimension = addressing_space % {denominator};",5) 
+
+
         output_channel_size = block_col_warps * warp_col_tiles
-        add_codeline(result_codelist, f"int output_channel_dimension = (addressing_space / {denominator}) % {output_channel_size};",5)
+        #add_codeline(result_codelist, f"int output_channel_dimension = (addressing_space / {denominator}) % {output_channel_size};",5)
+        add_codeline(result_codelist, f"int output_channel_dimension = (addressing_space / {denominator});",5)
 
         denominator *= output_channel_size
         add_codeline(result_codelist, f"bool out_of_bound = addressing_space > {denominator};", 5)
         add_codeline(result_codelist, f"if (out_of_bound)", 5)
         add_codeline(result_codelist, f"break;", 6)
-        add_codeline(result_codelist, f"int kernel_dst_addr = tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {ic_inner_size} * {tile_size};", 5)
-        add_codeline(result_codelist, f"int kernel_src_addr = kernel_global_base + tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {IC_OUTER} * {IC_INNER} * {tile_size};", 5)
+        #add_codeline(result_codelist, f"int kernel_dst_addr = tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {ic_inner_size} * {tile_size};", 5)
+        #add_codeline(result_codelist, f"int kernel_src_addr = kernel_global_base + tile_dimension * 1 + ic_inner_dimension * {tile_size} + output_channel_dimension * {IC_OUTER} * {IC_INNER} * {tile_size};", 5)
+        add_codeline(result_codelist, f"int kernel_dst_addr = ic_dimension + output_channel_dimension * {ic_inner_size} * {tile_size};", 5)
+        add_codeline(result_codelist, f"int kernel_src_addr = kernel_global_base + ic_dimension + output_channel_dimension * {IC_OUTER} * {IC_INNER} * {tile_size};", 5)
         if vectorized_load:
             add_codeline(result_codelist, f"((int4*)kernel_shared)[kernel_dst_addr] = ((int4*){input_kernel_name})[kernel_src_addr];", 5)
         else:
