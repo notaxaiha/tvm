@@ -129,7 +129,6 @@ class LocalBuilder(Builder):
 
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         self.tmp_dir = tempfile.mkdtemp()
-
         for i in range(0, len(measure_inputs), self.n_parallel):
             futures = []
             for inp in measure_inputs[i : i + self.n_parallel]:
@@ -336,7 +335,6 @@ class RPCRunner(Runner):
             priority=self.priority,
             timeout=self.timeout,
         )
-
         for i in range(0, len(measure_inputs), self.n_parallel):
             futures = []
             for measure_inp, build_res in zip(
@@ -372,6 +370,9 @@ class RPCRunner(Runner):
                             (str(ex),), MeasureErrorNo.RUN_TIMEOUT, self.timeout, time.time()
                         )
                     )
+                if os.path.isfile("/tmp/index.txt"):
+                    print("Delete index.txt")
+                    os.remove("/tmp/index.txt")
 
         return results
 
@@ -536,6 +537,16 @@ class _WrappedBuildFunc:
         tmp_dir: str
             The path of temporary directory to export generated library
         """
+        replacer = code_replacer.Code_replacer()
+        code_replacer.Code_replacer.enabled = True
+        code_replacer.Code_replacer.dump_path = "/root/TVM_test/debug_output/"
+        @tvm.register_func("tvm_callback_cuda_postproc", override=True)
+        def tvm_callback_cuda_postproc(code):
+            if code_replacer.Code_replacer.enabled:
+                code = replacer.code_replace_with_TVM_config(code, measure_input)
+                replacer.dump()
+                return code
+
         tic = time.time()
         try:
             filename = os.path.join(
@@ -685,7 +696,6 @@ class DefaultModuleLoader:
         remote = request_remote(**remote_kwargs)
         if self.pre_load_function is not None:
             self.pre_load_function(remote, build_result)
-
         remote.upload(build_result.filename)
         try:
             yield remote, remote.load_module(os.path.split(build_result.filename)[1])
@@ -787,19 +797,6 @@ def check_remote(target, device_key, host=None, port=None, priority=100, timeout
     t.start()
     t.join(timeout)
     return not t.is_alive()
-
-'''
-replacer = code_replacer.Code_replacer()
-code_replacer.Code_replacer.enabled = True
-code_replacer.Code_replacer.dump_path = "/home/junkyeong_choi/TVM_test/debug_output/"
-@tvm.register_func
-def tvm_callback_cuda_postproc(code):
-    #import pdb; pdb.set_trace()
-    if code_replacer.Code_replacer.enabled:
-        code = replacer.code_replace_with_TVM_config(code)
-        replacer.dump()
-    return code
-'''
 
 @tvm._ffi.register_func
 def tvm_callback_cuda_compile(code):
