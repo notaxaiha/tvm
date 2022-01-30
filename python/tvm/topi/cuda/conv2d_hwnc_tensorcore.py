@@ -236,14 +236,17 @@ def schedule_hwnc_tensorcore_cuda(cfg, s, Conv):
     kernel_dtype = packed_kernel.dtype
 
     # Schedule for autotvm
-    cfg.define_knob("block_row_warps", [1, 2, 4])
-    cfg.define_knob("block_col_warps", [1, 2, 4])
+    cfg.define_knob("block_row_warps", [1, 2, 4, 8, 16])
+    cfg.define_knob("block_col_warps", [1, 2, 4, 8, 16])
     cfg.define_knob("warp_row_tiles", [1, 2, 4, 8, 16])
     cfg.define_knob("warp_col_tiles", [1, 2, 4, 8, 16])
     cfg.define_knob("chunk", [1, 2, 4, 8])
-    cfg.define_knob("split_block_k_nums", [1, 2, 4, 8, 16, 32])
-    cfg.define_knob("vector_ws", [1, 8])
-    cfg.define_knob("vector_as", [1, 8, 16])
+    # cfg.define_knob("split_block_k_nums", [1, 2, 4, 8, 16, 32])
+    cfg.define_knob("split_block_k_nums", [8])
+    # cfg.define_knob("vector_ws", [1, 8])
+    cfg.define_knob("vector_ws", [1])
+    # cfg.define_knob("vector_as", [1, 8, 16])
+    cfg.define_knob("vector_as", [1])
 
     block_row_warps = cfg["block_row_warps"].val
     block_col_warps = cfg["block_col_warps"].val
@@ -350,15 +353,18 @@ def schedule_hwnc_tensorcore_cuda(cfg, s, Conv):
     s[WS].vectorize(ti)
 
     # double buffer
-    cfg.define_knob("AS_double_buffer", [0, 1])
-    cfg.define_knob("WS_double_buffer", [0, 1])
+    # cfg.define_knob("AS_double_buffer", [0, 1])
+    cfg.define_knob("AS_double_buffer", [1])
+    # cfg.define_knob("WS_double_buffer", [0, 1])
+    cfg.define_knob("WS_double_buffer", [1])
     if cfg["AS_double_buffer"].val:
         s[AS].double_buffer()
     if cfg["WS_double_buffer"].val:
         s[WS].double_buffer()
 
     # unroll
-    cfg.define_knob("auto_unroll_max_step", [0, 512, 1500])
+    # cfg.define_knob("auto_unroll_max_step", [0, 512, 1500])
+    cfg.define_knob("auto_unroll_max_step", [0])
     s[output].pragma(kernel_scope, "auto_unroll_max_step", cfg["auto_unroll_max_step"].val)
     s[output].pragma(kernel_scope, "unroll_explicit", False)
 

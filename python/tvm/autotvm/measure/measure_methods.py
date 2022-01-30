@@ -370,10 +370,11 @@ class RPCRunner(Runner):
                             (str(ex),), MeasureErrorNo.RUN_TIMEOUT, self.timeout, time.time()
                         )
                     )
-                if os.path.isfile("/tmp/index.txt"):
-                    print("Delete index.txt")
-                    os.remove("/tmp/index.txt")
 
+        if os.path.isfile("/tmp/index.txt"):
+            print("Delete index.txt")
+            os.remove("/tmp/index.txt")
+               
         return results
 
 
