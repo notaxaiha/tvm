@@ -340,7 +340,7 @@ class Code_replacer:
                     dimension_base //= 4
                 dst_addr_line += f" + {dimension_name}_dimension * {dimension_base}"
             dst_addr_line += ";"
-            #add_codeline(result_codelist, dst_addr_line, 3)
+            # add_codeline(result_codelist, dst_addr_line, 3)
 
 
             dimension_names_global = [dimension_name for (dimension_name, size) in memory_layout["featuremap_global"]]
@@ -357,13 +357,14 @@ class Code_replacer:
             if vectorized_load:
                 src_addr_line += " / 4"
             src_addr_line += ";"
-            #add_codeline(result_codelist, src_addr_line, 3)
+            # add_codeline(result_codelist, src_addr_line, 3)
 
             add_codeline(result_codelist, f"int dst_addr = addressing_space;", 3)
             if vectorized_load:
                 add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
             else:
-                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC});", 3)
+                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC};", 3)
+                # 220321 fixed by wkl
 
 
             if ko_kh_reorder:
@@ -465,7 +466,8 @@ class Code_replacer:
             if vectorized_load:
                 add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
             else:
-                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC});", 3)
+                # 220321 fixed by wkl
+                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC};", 3)
 
             add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + kh)) && ((outfeature_row + kh) < {PADDING} * {FEATUREMAP_HEIGHT});", 4)
             add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} * {FEATUREMAP_WIDTH});", 4)
