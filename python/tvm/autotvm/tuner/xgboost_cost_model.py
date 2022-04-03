@@ -19,6 +19,7 @@
 
 import logging
 import time
+import math
 
 import numpy as np
 
@@ -126,6 +127,8 @@ class XGBoostCostModel(CostModel):
 
         if feature_type == "itervar":
             self.feature_extract_func = _extract_itervar_feature_index
+        elif feature_type == "cuda_ast":
+            self.feature_extract_func = _extract_cuda_ast_feature_index
         elif feature_type == "knob":
             self.feature_extract_func = _extract_knob_feature_index
         elif feature_type == "curve":
@@ -387,6 +390,208 @@ def _extract_itervar_feature_log(arg):
         else:
             y = 0.0
         return x, y
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
+def _extract_cuda_ast_feature_index(args):
+    """extract iteration var feature from cuda code for an index in extract_space"""
+    try:
+        config = _extract_space.get(args)
+        knob = config.get_flatten_feature()
+        
+        # 0: block_row_warps, 1: block_col_warps, 2: warp_row_tiles, 3: warp_col_tiles, 4: chunk, 5: split_block_k_nums, 
+        # 6: vector_ws, 7: vetor_as, 8: reorder, 9: AS_db, 10: WS_db, 11: auto_unroll_max_step
+
+        dim_out = _extract_task.workload[1][1]
+        dim_ker = _extract_task.workload[2][1]
+
+        h = dim_out[0]
+        w = dim_out[1]
+        n = dim_out[2]
+        ic = dim_out[3]
+
+        k = dim_ker[0]
+        oc = dime_ker[2]
+                
+        num_loops = 19
+        ext = np.empty(num_loops, dtype = np.float32)
+        ext[0] = knob[2] * knob[3]  # o_c_init, accum_fragments = (M_WARP * N_WARP) // (self.wmma_m * self.wmma_n) = warp_row_tiles * warp_col_tiles
+        # reorder
+        if knob[8] == 1:
+            ext[1] = ic // 32 // knob[4]  # ic_outer, (in_channel // self.wmma_k) // chunk
+            ext[2] = k  # kh, kernel size
+        elif knob[9] == 0:
+            ext[2] = ic // 32 // knob[4]  # ic_outer, (in_channel // self.wmma_k) // chunk
+            ext[1] = k  # kh, kernel size
+        ext[3] = # load_iter, 
+        ext[4] = k  # kw, kernel size
+        ext[5] = knob[2]  # row_iter, warp_row_tiles
+        ext[6] = knob[4]  # ic_inner, chunk
+        
+        ext[7] = # load_iter, 
+        
+        ext[8] = knob[3]  # oc_tile, warp_col_tiles
+        ext[9] = knob[4]  # ic_inner, chunk
+        ext[10] = knob[4]  # ic_inner, chunk
+        ext[11] = knob[2]  # row_iter, warp_row_tiles
+        ext[12] = knob[3]  # oc_tile, warp_col_tiles
+        ext[13] = knob[2]  # row_iter, warp_row_tiles
+        ext[14] = knob[3] // 4  # packing_iter = warp_col_tiles // tiles_for_packing
+        ext[15] =  4 # output_tile_iter, tiles_for_packing = 32 // (8 * 8 // 8) = 4
+        
+        ext[16] = # elem_iter, Conv_wmma_accumulator[0].num_elements
+        
+        ext[17] = knob[2]  # row_iter, warp_row_tiles
+        ext[18] = knob[3] // 4  # channel_iter, warp_col_tiles // 4
+        
+        # _attr_ : length, nest_level, topdown, bottomup, one_hot_annotation
+        # _arith_ : add_ct, mul_ct, div_ct
+        # buffer : stride, mod, count, reuse, thread_count, thread_reuse
+        
+        fea = np.array([])
+        # fea_len = 5 # length, nest_level, topdown, bottomup, stride
+        
+        # 0, o_c_init
+        # fea = np.append(fea, np.array[])
+        fea = np.append(fea, np.array([math.log2(ext[0]+1)]))
+        fea = np.append(fea, np.array[1])
+        fea = np.append(fea, np.array[math.log2(ext[0]+1)])
+        fea = np.append(fea, math.log2(ext[0]+1))
+        # fea = np.append(fea, np.array[1+1])
+
+        # 1, ic_outer
+        fea = np.append(fea, np.array[math.log2(ext[1]+1)])
+        fea = np.append(fea, np.array[1])
+        fea = np.append(fea, np.array[math.log2(ext[1]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[12]*ext[11]*ext[10]*ext[4]*ext[2]*ext[1]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 2, kh
+        fea = np.append(fea, np.array[math.log2(ext[2]+1)])
+        fea = np.append(fea, np.array[2])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[12]*ext[11]*ext[10]*ext[4]*ext[2]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 3, load_iter
+        fea = np.append(fea, np.array[math.log2(ext[3]+1)])
+        fea = np.append(fea, np.array[3])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[3]+1)])
+        fea = np.append(fea, np.array[math.log2(0.5)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 4, kw
+        fea = np.append(fea, np.array[math.log2(ext[4]+1)])
+        fea = np.append(fea, np.array[3])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[12]*ext[11]*ext[10]*ext[4]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 5, row_iter
+        fea = np.append(fea, np.array[math.log2(ext[5]+1)])
+        fea = np.append(fea, np.array[4])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]*ext[5]+1)])
+        fea = np.append(fea, np.array[math.log2(0.5)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 6, ic_inner
+        fea = np.append(fea, np.array[math.log2(ext[6]+1)])
+        fea = np.append(fea, np.array[5])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]*ext[5]*ext[6]+1)])
+        fea = np.append(fea, np.array[math.log2(0.5)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 7, load_iter
+        fea = np.append(fea, np.array[math.log2(ext[7]+1)])
+        fea = np.append(fea, np.array[4])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]*ext[7]+1)])
+        fea = np.append(fea, np.array[math.log2(0.5)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 8, oc_tile
+        fea = np.append(fea, np.array[math.log2(ext[8]+1)])
+        fea = np.append(fea, np.array[4])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]*ext[8]+1)])
+        fea = np.append(fea, np.array[math.log2(0.5)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 9, ic_inner
+        fea = np.append(fea, np.array[math.log2(ext[9]+1)])
+        fea = np.append(fea, np.array[5])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]*ext[8]*ext[9]+1)])
+        fea = np.append(fea, np.array[math.log2(0.5)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+        
+        # 10, ic_inner
+        fea = np.append(fea, np.array[math.log2(ext[10]+1)])
+        fea = np.append(fea, np.array[4])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]*ext[10]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[12]*ext[11]*ext[10]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 11, row_iter
+        fea = np.append(fea, np.array[math.log2(ext[11]+1)])
+        fea = np.append(fea, np.array[5])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]*ext[10]*ext[11]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[12]*ext[11]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 12, oc_tile
+        fea = np.append(fea, np.array[math.log2(ext[12]+1)])
+        fea = np.append(fea, np.array[6])
+        fea = np.append(fea, np.array[math.log2(ext[1]*ext[2]*ext[4]*ext[10]*ext[11]*ext[12]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[12]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 13, row_iter
+        fea = np.append(fea, np.array[math.log2(ext[13]+1)])
+        fea = np.append(fea, np.array[1])
+        fea = np.append(fea, np.array[math.log2(ext[13]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[16]*ext[15]*ext[14]*ext[13]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 14, packing_iter
+        fea = np.append(fea, np.array[math.log2(ext[14]+1)])
+        fea = np.append(fea, np.array[2])
+        fea = np.append(fea, np.array[math.log2(ext[13]*ext[14]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[16]*ext[15]*ext[14]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 15, output_tile_iter
+        fea = np.append(fea, np.array[math.log2(ext[15]+1)])
+        fea = np.append(fea, np.array[3])
+        fea = np.append(fea, np.array[math.log2(ext[13]*ext[14]*ext[15]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[16]*ext[15]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 16, elem_iter
+        fea = np.append(fea, np.array[math.log2(ext[16]+1)])
+        fea = np.append(fea, np.array[4])
+        fea = np.append(fea, np.array[math.log2(ext[13]*ext[14]*ext[15]*ext[16]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[16]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 17, row_iter
+        fea = np.append(fea, np.array[math.log2(ext[17]+1)])
+        fea = np.append(fea, np.array[1])
+        fea = np.append(fea, np.array[math.log2(ext[17]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[18]*ext[17]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        # 18, channel_iter
+        fea = np.append(fea, np.array[math.log2(ext[18]+1)])
+        fea = np.append(fea, np.array[2])
+        fea = np.append(fea, np.array[math.log2(ext[17]*ext[18]+1)])
+        fea = np.append(fea, np.array[math.log2(ext[18]+1)])
+        # fea = np.append(fea, np.array[math.log2(+1)])
+
+        fea = fea.astype(np.float32)
+        fea = np.concatenate((fea, list(config.get_other_option().values())))
+
+        return fea
+
+
     except Exception:  # pylint: disable=broad-except
         return None
 
