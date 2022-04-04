@@ -432,7 +432,7 @@ def get_cuda_ast_feature(config, task):
         ext[2] = ic // 32 // knob[4]  # ic_outer, (in_channel // self.wmma_k) // chunk
         ext[1] = k  # kh, kernel size
     
-    ext[3] = 1 # load_iter for feature map, 
+    ext[3] = -((knob[0]*knob[2] + k - 1) * ic // 4 // -(knob[0]*knob[1]*32))# load_iter for feature map, 
     
     ext[4] = k  # kw, kernel size
     ext[5] = knob[2]  # row_iter, warp_row_tiles
