@@ -432,13 +432,13 @@ def get_cuda_ast_feature(config, task):
         ext[2] = ic // 32 // knob[4]  # ic_outer, (in_channel // self.wmma_k) // chunk
         ext[1] = k  # kh, kernel size
     
-    ext[3] = 1 # load_iter, 
+    ext[3] = 1 # load_iter for feature map, 
     
     ext[4] = k  # kw, kernel size
     ext[5] = knob[2]  # row_iter, warp_row_tiles
     ext[6] = knob[4]  # ic_inner, chunk
     
-    ext[7] = 1 # load_iter, 
+    ext[7] = -(max((ic*knob[1]*knob[3]*8)//(8*(ic//32//knob[4])),(knob[0]*knob[2]*8)*(knob[1]*knob[3]*8)//8) // 4 // -(knob[0]*knob[1]*32)) # load_iter for kernel, 
     
     ext[8] = knob[3]  # oc_tile, warp_col_tiles
     ext[9] = knob[4]  # ic_inner, chunk
@@ -449,7 +449,7 @@ def get_cuda_ast_feature(config, task):
     ext[14] = knob[3] // 4  # packing_iter = warp_col_tiles // tiles_for_packing
     ext[15] =  4 # output_tile_iter, tiles_for_packing = 32 // (8 * 8 // 8) = 4
     
-    ext[16] = 1 # elem_iter, Conv_wmma_accumulator[0].num_elements
+    ext[16] = 2 # elem_iter, Conv_wmma_accumulator[0].num_elements, 8 * 8 // 32
     
     ext[17] = knob[2]  # row_iter, warp_row_tiles
     ext[18] = knob[3] // 4  # channel_iter, warp_col_tiles // 4
