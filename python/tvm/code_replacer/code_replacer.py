@@ -36,6 +36,7 @@ class Code_replacer:
         num_filter = self.compute_dict["num_filter"]
         padding = self.compute_dict["padding"]
 
+        rlp_flag = self.schedule_dict["register_level_packing"]
         block_row_warps = self.schedule_dict["block_row_warps"]
         block_col_warps = self.schedule_dict["block_col_warps"]
         warp_row_tiles = self.schedule_dict["warp_row_tiles"]
@@ -114,6 +115,7 @@ class Code_replacer:
         codegen_dict["NUM_OC"] = num_filter
         codegen_dict["PADDING"] = padding
         codegen_dict["REORDER"] = ko_kh_reorder
+        codegen_dict["RLP"] = rlp_flag
 
         return codegen_dict
 
@@ -141,6 +143,7 @@ class Code_replacer:
         NUM_OC = self.codegen_dict["NUM_OC"] 
         PADDING = self.codegen_dict["PADDING"] 
         REORDER = self.codegen_dict["REORDER"] 
+        RLP = self.codegen_dict["RLP"]
         PACK_RATE = 8
 
         manual_correctness_check = False
@@ -201,7 +204,13 @@ class Code_replacer:
 
         vectorized_load = True 
         ko_kh_reorder = REORDER
-        register_level_packing = True
+        if self.codegen_dict["RLP"] == 1:
+            register_level_packing = True
+            print("RLP ON")
+        else:
+            register_level_packing = False
+            print("RLP OFF")
+            
         #kw_ki_reorder = False
         if ko_kh_reorder:
             axis_order[0], axis_order[1] = axis_order[1], axis_order[0]
@@ -894,7 +903,7 @@ class Code_replacer:
         # print("")
 
         cfg_config = cfg_data[2]
-        knobs = ['block_row_warps', 'block_col_warps', 'warp_row_tiles', 'warp_col_tiles', 'chunk'] 
+        knobs = ['register_level_packing', 'block_row_warps', 'block_col_warps', 'warp_row_tiles', 'warp_col_tiles', 'chunk'] 
         knob_list = [knob for knob in knobs]
         value_list = [cfg_config[knob].val for knob in knobs]
         knob_list.append('reorder_inner')

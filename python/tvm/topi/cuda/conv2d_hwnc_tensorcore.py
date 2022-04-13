@@ -368,6 +368,9 @@ def schedule_hwnc_tensorcore_cuda(cfg, s, Conv):
     s[output].pragma(kernel_scope, "auto_unroll_max_step", cfg["auto_unroll_max_step"].val)
     s[output].pragma(kernel_scope, "unroll_explicit", False)
 
+    # knob to enable register level packing
+    cfg.define_knob("register_level_packing", [0, 1])
+    
     shape = (wmma_m, wmma_n, wmma_k)
 
     AS_shape = (wmma_m, wmma_k)
