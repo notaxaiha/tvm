@@ -115,7 +115,7 @@ class Code_replacer:
         codegen_dict["NUM_OC"] = num_filter
         codegen_dict["PADDING"] = padding
         codegen_dict["REORDER"] = ko_kh_reorder
-        codegen_dict["register_level_packing"] = rlp_flag
+        codegen_dict["RLP"] = rlp_flag
 
         return codegen_dict
 
@@ -143,7 +143,7 @@ class Code_replacer:
         NUM_OC = self.codegen_dict["NUM_OC"] 
         PADDING = self.codegen_dict["PADDING"] 
         REORDER = self.codegen_dict["REORDER"] 
-        RLP = self.codegen_dict["register_level_packing"]
+        RLP = self.codegen_dict["RLP"]
         PACK_RATE = 8
 
         manual_correctness_check = False
