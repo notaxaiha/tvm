@@ -438,6 +438,8 @@ class Code_replacer:
                 #add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator}) % {dimension_size};", 4)
                 if dimension_name == "kw":
                     add_codeline(result_codelist, f"int {dimension_name}_dimension = (addressing_space / {denominator});", 4)
+                    denom_kw = denominator
+                    add_codeline(result_codelist, f"int denom_kw = {denominator};", 4)
                 denominator *= dimension_size
             add_codeline(result_codelist, f"bool out_of_shmem_bound = addressing_space >= {denominator};", 4)
             add_codeline(result_codelist, "if (out_of_shmem_bound)", 4)
@@ -473,13 +475,17 @@ class Code_replacer:
 
             add_codeline(result_codelist, f"int dst_addr = addressing_space;", 3)
             if vectorized_load:
-                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
+                # fixed by wklee, 220427
+                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + (kw_dimension * ({IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE} / 4)) + (addressing_space % denom_kw)  - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
+                # add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC} / 4;", 3)
             else:
+                # fixed by wklee, 220427
+                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + (kw_dimension * ({IC_OUTER} * {IC_INNER} * {self.wmma_m * self.wmma_k // PACK_RATE})) + (addressing_space % denom_kw)  - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC};", 3)
                 # 220321 fixed by wkl
-                add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC};", 3)
+                # add_codeline(result_codelist, f"int src_addr = featuremap_global_base + addressing_space - ({PADDING} * {FEATUREMAP_WIDTH} + {PADDING}) * {NUM_IC};", 3)
 
-            add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + kh)) && ((outfeature_row + kh) < {PADDING} * {FEATUREMAP_HEIGHT});", 4)
-            add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} * {FEATUREMAP_WIDTH});", 4)
+            add_codeline(result_codelist, f"bool inside_gmem_bound = ({PADDING} <= (outfeature_row + kh)) && ((outfeature_row + kh) < {PADDING} + {FEATUREMAP_HEIGHT});", 4) # fixed by wkl, 220425
+            add_codeline(result_codelist, f"inside_gmem_bound &= ({PADDING} <= (outfeature_col + kw_dimension)) && ((outfeature_col + kw_dimension) < {PADDING} + {FEATUREMAP_WIDTH});", 4)
             if vectorized_load:
                 add_codeline(result_codelist, f"int4 zeros = {{0,0,0,0}};", 3)
                 add_codeline(result_codelist, f"((int4*)featuremap_shared)[dst_addr] = (inside_gmem_bound) ? ((int4*){input_featuremap_name})[src_addr] : zeros;", 4)
